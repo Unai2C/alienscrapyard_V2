@@ -301,9 +301,7 @@ export function initScene(getPart: () => PartType): void {
   ux.on('attachRejected', (data: any) => {
     if (!data || data.playerId !== getLocalPlayerId()) return
     clearAntiSpam(data.slotId)
-    if (data.reason === 'stale_template' || data.reason === 'stale_round' || data.reason === 'phase_mismatch') {
-      console.log(`[SCENE] rejected reason=${data.reason} slot=${data.slotId}`)
-    }
+    console.log(`[SCENE] rejected reason=${data.reason} slot=${data.slotId} phase=${data.currentPhase}`)
   })
 }
 
@@ -377,6 +375,14 @@ export function reconcileScene(): void {
 
   const buildable = phase === 'BUILD'
   const showSolids = phase === 'BUILD' || phase === 'BUILD_COMPLETE'
+
+  // On transition into a non-visual phase, declaratively remove all slot
+  // entities. Per-slot removeSlotSolid/removeSlotAffordance depend on slotRefs
+  // being fully populated, which is not guaranteed for late joiners whose initial
+  // state came from a CRDT snapshot rather than incremental attach events.
+  if (phaseRebuild && !showSolids) {
+    clearAllSlotVisuals(`transition-to=${phase}`)
+  }
 
   // Build occupiedMask from authoritative state.
   const mask = snap.occupiedMask | 0
