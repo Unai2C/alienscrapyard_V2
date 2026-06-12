@@ -6,7 +6,7 @@ import {
 import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import { RoundState, ux } from '../shared/components'
 import {
-  PartType, PART_GLB, GLB_SCALE,
+  PartType, PART_TYPES, PART_GLB, GLB_SCALE,
   SCENE_CENTER, DEBUG, RoundPhase
 } from '../shared/constants'
 import { SlotDefinition, TEMPLATES, TemplateId, getTemplate } from '../shared/templates'
@@ -24,7 +24,8 @@ const SlotVisual = engine.defineComponent('dbc:SlotVisual', {
   slotId:      Schemas.String,
   templateId:  Schemas.String,
   roundNumber: Schemas.Int,
-  kind:        Schemas.String
+  kind:        Schemas.String,
+  part:        Schemas.String
 })
 
 interface SlotRefs {
@@ -47,9 +48,12 @@ let arenaEntity: Entity = 0 as Entity
 const recentClicks: Set<string> = new Set()
 const ANTI_SPAM_MS = 400
 
-// Active feedback flash entities — tracked so clearAllSlotVisuals can cancel
-// them before their setTimeout fires (prevents entity-ID reuse hazards).
+// Active feedback flashes — tracked so clearAllSlotVisuals can cancel them.
+// Tokens guard against a stale timeout releasing a pooled entity that has
+// already been re-acquired for a newer flash.
 const activeFlashes: Set<Entity> = new Set()
+const flashTokens: Map<Entity, number> = new Map()
+let flashTokenSeq = 0
 
 // Visual health audit — runs every second in BUILD/BUILD_COMPLETE to catch
 // any entities that were silently lost.
@@ -92,24 +96,140 @@ function logVisualSummary(reason: string): void {
   )
 }
 
-//  Entity helpers 
-function isAlive(e: Entity | undefined): boolean {
-  if (e === undefined) return false
-  try { Transform.get(e); return true } catch (_) { return false }
+//  Visual entity pool
+// The Unity explorer desyncs render instances from ECS state under entity
+// churn bursts — orphaned meshes, invisible meshes and dropped UI elements
+// were all reproduced on 2026-06-10 with the ECS provably correct. So slot
+// visuals are never created or removed during gameplay: each (kind, part)
+// pool owns persistent entities that get repositioned + shown on acquire and
+// hidden + parked on release. The render object lives for the whole session
+// and only ever receives property updates.
+const HIDDEN_Y = -100
+
+const poolFree: Record<string, Entity[]> = {}
+const poolInUse: Set<Entity> = new Set()
+
+function poolKey(kind: SlotKind, part: PartType | ''): string {
+  return `${kind}:${part}`
 }
 
-function removeEntitySafe(e: Entity | undefined): void {
-  if (e === undefined) return
-  try { pointerEventsSystem.removeOnPointerDown(e) } catch (_) {}
-  try { engine.removeEntity(e) } catch (_) {}
+function createPooledEntity(kind: SlotKind, part: PartType | ''): Entity {
+  const e = engine.addEntity()
+  Transform.create(e, {
+    position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
+    scale: Vector3.Zero(),
+    rotation: Quaternion.Identity()
+  })
+  if (kind === 'ghost') {
+    const p = part as PartType
+    if (p === 'CUBE') MeshRenderer.setBox(e)
+    else if (p === 'CYLINDER') MeshRenderer.setCylinder(e)
+    else MeshRenderer.setCylinder(e, 0, 0.5)
+    Material.setPbrMaterial(e, {
+      albedoColor: PART_GLOW_COLOR[p],
+      transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
+      emissiveColor: PART_EMISSIVE[p],
+      emissiveIntensity: 1.2
+    })
+  } else if (kind === 'solid') {
+    GltfContainer.create(e, {
+      src: PART_GLB[part as PartType],
+      visibleMeshesCollisionMask: 0,
+      invisibleMeshesCollisionMask: 0
+    })
+  } else if (kind === 'hitbox') {
+    MeshCollider.setBox(e, ColliderLayer.CL_POINTER)
+  } else if (kind === 'collider') {
+    MeshCollider.setBox(e, ColliderLayer.CL_PHYSICS)
+  } else {
+    MeshRenderer.setSphere(e)
+  }
+  return e
 }
 
-function tagVisual(e: Entity, slot: SlotDefinition, kind: SlotKind): void {
+function acquireEntity(kind: SlotKind, part: PartType | ''): Entity {
+  const key = poolKey(kind, part)
+  const free = poolFree[key] || (poolFree[key] = [])
+  let e = free.pop()
+  if (e === undefined) {
+    // Pools are prewarmed at init to the worst case across all templates, so
+    // this should never run. If it does, the log flags that a mid-session
+    // entity creation happened — the one operation we aim to never perform.
+    e = createPooledEntity(kind, part)
+    console.log(`[SCENE] pool exhausted key=${key} — created mid-session entity`)
+  }
+  poolInUse.add(e)
+  return e
+}
+
+// Create the full visual inventory up front, parked out of sight. Gameplay
+// then never creates entities: every visual is a property update on a
+// pre-existing entity whose GLB/mesh finished loading during scene init.
+function prewarmPools(): void {
+  const maxPerPart: Record<PartType, number> = { CUBE: 0, CYLINDER: 0, CONE: 0 }
+  let maxSlots = 0
+  for (const id of Object.keys(TEMPLATES)) {
+    const slots = TEMPLATES[id as TemplateId]
+    maxSlots = Math.max(maxSlots, slots.length)
+    const count: Record<PartType, number> = { CUBE: 0, CYLINDER: 0, CONE: 0 }
+    for (const s of slots) count[s.requiredPart]++
+    for (const p of PART_TYPES) maxPerPart[p] = Math.max(maxPerPart[p], count[p])
+  }
+  let created = 0
+  for (const p of PART_TYPES) {
+    for (let i = 0; i < maxPerPart[p]; i++) {
+      prewarmOne('ghost', p)
+      prewarmOne('solid', p)
+      created += 2
+    }
+  }
+  for (let i = 0; i < maxSlots; i++) {
+    prewarmOne('hitbox', '')
+    prewarmOne('collider', '')
+    created += 2
+  }
+  for (let i = 0; i < 3; i++) {
+    prewarmOne('feedback', '')
+    created++
+  }
+  console.log(
+    `[SCENE] pools prewarmed entities=${created} maxSlots=${maxSlots} ` +
+    `cube=${maxPerPart.CUBE} cyl=${maxPerPart.CYLINDER} cone=${maxPerPart.CONE}`
+  )
+}
+
+function prewarmOne(kind: SlotKind, part: PartType | ''): void {
+  const key = poolKey(kind, part)
+  ;(poolFree[key] || (poolFree[key] = [])).push(createPooledEntity(kind, part))
+}
+
+// Hides the entity and returns it to its pool. The (kind, part) pool key is
+// read from the entity's own SlotVisual tag, so callers only pass the entity.
+function releaseEntity(e: Entity | undefined): void {
+  if (e === undefined || !poolInUse.has(e)) return
+  const tag = SlotVisual.getOrNull(e)
+  if (!tag) return
+  poolInUse.delete(e)
+  SlotVisual.deleteFrom(e)
+  if (tag.kind === 'hitbox') {
+    try { pointerEventsSystem.removeOnPointerDown(e) } catch (_) {}
+  }
+  try {
+    const t = Transform.getMutable(e)
+    t.scale = Vector3.Zero()
+    t.position = Vector3.create(t.position.x, HIDDEN_Y, t.position.z)
+  } catch (_) {}
+  const key = poolKey(tag.kind as SlotKind, tag.part as PartType | '')
+  ;(poolFree[key] || (poolFree[key] = [])).push(e)
+}
+
+function tagVisual(e: Entity, slot: SlotDefinition, kind: SlotKind, part: PartType | ''): void {
   SlotVisual.createOrReplace(e, {
     slotId: slot.slotId,
     templateId: activeTemplateId,
     roundNumber: activeRoundNumber,
-    kind
+    kind,
+    part
   })
   if (DEBUG) {
     console.log(`[SCENE] tag kind=${kind} slot=${slot.slotId} template=${activeTemplateId} round=${activeRoundNumber}`)
@@ -117,13 +237,13 @@ function tagVisual(e: Entity, slot: SlotDefinition, kind: SlotKind): void {
 }
 
 function clearAllSlotVisuals(reason: string): void {
-  // Cancel active flashes first to prevent entity-ID reuse after removal.
-  for (const e of activeFlashes) removeEntitySafe(e)
+  // Cancel active flashes first so their pending timeouts become no-ops.
+  for (const e of activeFlashes) { flashTokens.delete(e); releaseEntity(e) }
   activeFlashes.clear()
 
   const entities: Entity[] = []
   for (const [e] of engine.getEntitiesWith(SlotVisual)) entities.push(e)
-  for (const e of entities) removeEntitySafe(e)
+  for (const e of entities) releaseEntity(e)
   for (const k of Object.keys(slotRefs)) delete slotRefs[k]
   recentClicks.clear()
   healthAuditAtMs = 0
@@ -140,33 +260,23 @@ function slotScaleVector(slot: SlotDefinition): Vector3 {
   return Vector3.create(slot.scale.x * GLB_SCALE, slot.scale.y * GLB_SCALE, slot.scale.z * GLB_SCALE)
 }
 
-//  Visual builders 
-function createGhost(slot: SlotDefinition): Entity {
-  const e = engine.addEntity()
-  const pos = slotPositionVector(slot)
-  const scale = Vector3.scale(slotScaleVector(slot), 1.18)
-  Transform.create(e, { position: pos, scale, rotation: partRotation(slot.requiredPart) })
-  if (slot.requiredPart === 'CUBE') MeshRenderer.setBox(e)
-  else if (slot.requiredPart === 'CYLINDER') MeshRenderer.setCylinder(e)
-  else MeshRenderer.setCylinder(e, 0, 0.5)
-  Material.setPbrMaterial(e, {
-    albedoColor: PART_GLOW_COLOR[slot.requiredPart],
-    transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
-    emissiveColor: PART_EMISSIVE[slot.requiredPart],
-    emissiveIntensity: 1.2
-  })
-  tagVisual(e, slot, 'ghost')
+//  Visual placement (pool-backed)
+function placeGhost(slot: SlotDefinition): Entity {
+  const e = acquireEntity('ghost', slot.requiredPart)
+  const t = Transform.getMutable(e)
+  t.position = slotPositionVector(slot)
+  t.scale = Vector3.scale(slotScaleVector(slot), 1.18)
+  t.rotation = partRotation(slot.requiredPart)
+  tagVisual(e, slot, 'ghost', slot.requiredPart)
   return e
 }
 
-function createHitbox(slot: SlotDefinition): Entity {
-  const e = engine.addEntity()
-  Transform.create(e, {
-    position: slotPositionVector(slot),
-    scale: slotScaleVector(slot),
-    rotation: partRotation(slot.requiredPart)
-  })
-  MeshCollider.setBox(e, ColliderLayer.CL_POINTER)
+function placeHitbox(slot: SlotDefinition): Entity {
+  const e = acquireEntity('hitbox', '')
+  const t = Transform.getMutable(e)
+  t.position = slotPositionVector(slot)
+  t.scale = slotScaleVector(slot)
+  t.rotation = partRotation(slot.requiredPart)
   pointerEventsSystem.onPointerDown(
     {
       entity: e,
@@ -178,76 +288,73 @@ function createHitbox(slot: SlotDefinition): Entity {
     },
     () => onSlotClick(slot)
   )
-  tagVisual(e, slot, 'hitbox')
+  tagVisual(e, slot, 'hitbox', '')
   return e
 }
 
-function createSolid(slot: SlotDefinition): { solid: Entity; collider: Entity } {
-  const solid = engine.addEntity()
-  Transform.create(solid, {
-    position: slotPositionVector(slot),
-    scale: slotScaleVector(slot),
-    rotation: partRotation(slot.requiredPart)
-  })
-  GltfContainer.create(solid, {
-    src: PART_GLB[slot.requiredPart],
-    visibleMeshesCollisionMask: 0,
-    invisibleMeshesCollisionMask: 0
-  })
-  tagVisual(solid, slot, 'solid')
+function placeSolid(slot: SlotDefinition): { solid: Entity; collider: Entity } {
+  const solid = acquireEntity('solid', slot.requiredPart)
+  let t = Transform.getMutable(solid)
+  t.position = slotPositionVector(slot)
+  t.scale = slotScaleVector(slot)
+  t.rotation = partRotation(slot.requiredPart)
+  tagVisual(solid, slot, 'solid', slot.requiredPart)
 
-  const collider = engine.addEntity()
-  Transform.create(collider, {
-    position: slotPositionVector(slot),
-    scale: slotScaleVector(slot),
-    rotation: partRotation(slot.requiredPart)
-  })
-  MeshCollider.setBox(collider, ColliderLayer.CL_PHYSICS)
-  tagVisual(collider, slot, 'collider')
+  const collider = acquireEntity('collider', '')
+  t = Transform.getMutable(collider)
+  t.position = slotPositionVector(slot)
+  t.scale = slotScaleVector(slot)
+  t.rotation = partRotation(slot.requiredPart)
+  tagVisual(collider, slot, 'collider', '')
   return { solid, collider }
 }
 
 function flashFeedback(slot: SlotDefinition, color: Color4): void {
-  const e = engine.addEntity()
-  const scale = Vector3.scale(slotScaleVector(slot), 3.0)
-  Transform.create(e, { position: slotPositionVector(slot), scale })
-  MeshRenderer.setSphere(e)
+  const e = acquireEntity('feedback', '')
+  const t = Transform.getMutable(e)
+  t.position = slotPositionVector(slot)
+  t.scale = Vector3.scale(slotScaleVector(slot), 3.0)
+  t.rotation = Quaternion.Identity()
   Material.setPbrMaterial(e, {
     albedoColor: { r: color.r, g: color.g, b: color.b, a: 0.55 },
     transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
     emissiveColor: color,
     emissiveIntensity: 3.0
   })
-  tagVisual(e, slot, 'feedback')
+  tagVisual(e, slot, 'feedback', '')
   activeFlashes.add(e)
+  const token = ++flashTokenSeq
+  flashTokens.set(e, token)
   setTimeout(() => {
+    if (flashTokens.get(e) !== token) return
+    flashTokens.delete(e)
     activeFlashes.delete(e)
-    removeEntitySafe(e)
+    releaseEntity(e)
   }, 600)
 }
 
-//  Affordance state 
+//  Affordance state
 function ensureSlotAffordance(slot: SlotDefinition): void {
   const refs = slotRefs[slot.slotId] || (slotRefs[slot.slotId] = {})
-  if (!isAlive(refs.ghost)) refs.ghost = createGhost(slot)
-  if (!isAlive(refs.hitbox)) refs.hitbox = createHitbox(slot)
+  if (refs.ghost === undefined) refs.ghost = placeGhost(slot)
+  if (refs.hitbox === undefined) refs.hitbox = placeHitbox(slot)
 }
 
 function removeSlotAffordance(slot: SlotDefinition): void {
   const refs = slotRefs[slot.slotId]
   if (!refs) return
-  removeEntitySafe(refs.ghost)
-  removeEntitySafe(refs.hitbox)
+  releaseEntity(refs.ghost)
+  releaseEntity(refs.hitbox)
   refs.ghost = undefined
   refs.hitbox = undefined
 }
 
 function ensureSlotSolid(slot: SlotDefinition): void {
   const refs = slotRefs[slot.slotId] || (slotRefs[slot.slotId] = {})
-  if (!isAlive(refs.solid) || !isAlive(refs.collider)) {
-    removeEntitySafe(refs.solid)
-    removeEntitySafe(refs.collider)
-    const created = createSolid(slot)
+  if (refs.solid === undefined || refs.collider === undefined) {
+    releaseEntity(refs.solid)
+    releaseEntity(refs.collider)
+    const created = placeSolid(slot)
     refs.solid = created.solid
     refs.collider = created.collider
   }
@@ -256,8 +363,8 @@ function ensureSlotSolid(slot: SlotDefinition): void {
 function removeSlotSolid(slot: SlotDefinition): void {
   const refs = slotRefs[slot.slotId]
   if (!refs) return
-  removeEntitySafe(refs.solid)
-  removeEntitySafe(refs.collider)
+  releaseEntity(refs.solid)
+  releaseEntity(refs.collider)
   refs.solid = undefined
   refs.collider = undefined
 }
@@ -282,9 +389,10 @@ export function initArena(): void {
   })
 }
 
-//  Public init 
+//  Public init
 export function initScene(getPart: () => PartType): void {
   getSelectedPartFn = getPart
+  prewarmPools()
 
   ux.on('wrongPart', (data: any) => {
     if (!data) return
@@ -305,7 +413,114 @@ export function initScene(getPart: () => PartType): void {
   })
 }
 
-//  Visual health audit 
+//  Integrity check
+// Working assumption: the renderer faithfully draws ECS state. Then any wrong
+// pixel means OUR state is wrong somewhere the tag census cannot see — e.g. a
+// tagged solid that is actually parked at HIDDEN_Y, or a part mesh that fell
+// out of the bookkeeping entirely. This check verifies real transforms against
+// expectations slot by slot and logs every discrepancy with coordinates, so a
+// repro names the exact bug.
+function verifyPlaced(e: Entity | undefined, slot: SlotDefinition, kind: string, scaleMul: number): number {
+  if (e === undefined) {
+    console.log(`[INTEGRITY] missing ref slot=${slot.slotId} kind=${kind}`)
+    return 1
+  }
+  // The mesh-bearing component must still be present on the entity.
+  const meshMissing =
+    (kind === 'ghost' && MeshRenderer.getOrNull(e) === null) ||
+    (kind === 'solid' && GltfContainer.getOrNull(e) === null) ||
+    ((kind === 'hitbox' || kind === 'collider') && MeshCollider.getOrNull(e) === null)
+  if (meshMissing) {
+    console.log(`[INTEGRITY] missing mesh component slot=${slot.slotId} kind=${kind}`)
+    return 1
+  }
+  try {
+    const t = Transform.get(e)
+    const expected = slotPositionVector(slot)
+    const expScale = slotScaleVector(slot).x * scaleMul
+    if (
+      Math.abs(t.position.x - expected.x) > 0.01 ||
+      Math.abs(t.position.y - expected.y) > 0.01 ||
+      Math.abs(t.position.z - expected.z) > 0.01 ||
+      Math.abs(t.scale.x - expScale) > 0.01
+    ) {
+      console.log(
+        `[INTEGRITY] misplaced slot=${slot.slotId} kind=${kind} ` +
+        `expected=(${expected.x.toFixed(1)},${expected.y.toFixed(1)},${expected.z.toFixed(1)},s=${expScale.toFixed(2)}) ` +
+        `actual=(${t.position.x.toFixed(1)},${t.position.y.toFixed(1)},${t.position.z.toFixed(1)},s=${t.scale.x.toFixed(2)})`
+      )
+      return 1
+    }
+  } catch (_) {
+    console.log(`[INTEGRITY] dead entity slot=${slot.slotId} kind=${kind}`)
+    return 1
+  }
+  return 0
+}
+
+function runIntegrityCheck(slots: SlotDefinition[], mask: number, phase: RoundPhase): number {
+  let issues = 0
+  const buildable = phase === 'BUILD'
+  const showSolids = phase === 'BUILD' || phase === 'BUILD_COMPLETE'
+
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i]
+    const occupied = ((mask >> i) & 1) === 1
+    const refs = slotRefs[slot.slotId]
+    if (occupied && showSolids) {
+      issues += verifyPlaced(refs?.solid, slot, 'solid', 1)
+      issues += verifyPlaced(refs?.collider, slot, 'collider', 1)
+    } else if (!occupied && buildable) {
+      issues += verifyPlaced(refs?.ghost, slot, 'ghost', 1.18)
+      issues += verifyPlaced(refs?.hitbox, slot, 'hitbox', 1)
+    }
+  }
+
+  // Freed entities must really be parked out of sight.
+  for (const key of Object.keys(poolFree)) {
+    for (const e of poolFree[key]) {
+      try {
+        const t = Transform.get(e)
+        if (t.position.y > HIDDEN_Y + 1 || t.scale.x > 0.001) {
+          issues++
+          console.log(
+            `[INTEGRITY] freed entity not parked pool=${key} ` +
+            `pos=(${t.position.x.toFixed(1)},${t.position.y.toFixed(1)},${t.position.z.toFixed(1)}) scale=${t.scale.x.toFixed(3)}`
+          )
+        }
+      } catch (_) {
+        issues++
+        console.log(`[INTEGRITY] freed entity has no transform pool=${key}`)
+      }
+    }
+  }
+  return issues
+}
+
+// Any part-GLB entity outside the pools and not parented (the carried
+// shoulder piece is player-parented) is a stray our bookkeeping lost.
+function logStrayPartMeshes(): number {
+  let strays = 0
+  for (const [e, g, t] of engine.getEntitiesWith(GltfContainer, Transform)) {
+    const src = g.src
+    if (src !== PART_GLB.CUBE && src !== PART_GLB.CYLINDER && src !== PART_GLB.CONE) continue
+    if (t.parent !== undefined && t.parent !== (0 as Entity)) continue
+    if (poolInUse.has(e)) continue
+    let pooled = false
+    for (const key of Object.keys(poolFree)) {
+      if (poolFree[key].indexOf(e) >= 0) { pooled = true; break }
+    }
+    if (pooled) continue
+    strays++
+    console.log(
+      `[INTEGRITY] stray part mesh src=${src} ` +
+      `pos=(${t.position.x.toFixed(1)},${t.position.y.toFixed(1)},${t.position.z.toFixed(1)}) scale=${t.scale.x.toFixed(2)}`
+    )
+  }
+  return strays
+}
+
+//  Visual health audit
 // Runs once per second. Verifies slotRefs match the expected state and
 // silently repairs any discrepancy (e.g. an entity whose underlying ECS
 // record was silently dropped). Repairs are logged only when N > 0.
@@ -317,26 +532,26 @@ function runHealthAudit(slots: SlotDefinition[], mask: number, phase: string): v
     const refs = slotRefs[slot.slotId] || (slotRefs[slot.slotId] = {})
 
     if (occupied) {
-      if (!isAlive(refs.solid) || !isAlive(refs.collider)) {
-        removeEntitySafe(refs.solid)
-        removeEntitySafe(refs.collider)
-        const created = createSolid(slot)
+      if (refs.solid === undefined || refs.collider === undefined) {
+        releaseEntity(refs.solid)
+        releaseEntity(refs.collider)
+        const created = placeSolid(slot)
         refs.solid = created.solid
         refs.collider = created.collider
         repaired++
       }
-      if (isAlive(refs.ghost))  { removeEntitySafe(refs.ghost);  refs.ghost  = undefined; repaired++ }
-      if (isAlive(refs.hitbox)) { removeEntitySafe(refs.hitbox); refs.hitbox = undefined; repaired++ }
+      if (refs.ghost !== undefined)  { releaseEntity(refs.ghost);  refs.ghost  = undefined; repaired++ }
+      if (refs.hitbox !== undefined) { releaseEntity(refs.hitbox); refs.hitbox = undefined; repaired++ }
     } else if (phase === 'BUILD') {
-      if (!isAlive(refs.ghost) || !isAlive(refs.hitbox)) {
-        removeEntitySafe(refs.ghost)
-        removeEntitySafe(refs.hitbox)
-        refs.ghost  = createGhost(slot)
-        refs.hitbox = createHitbox(slot)
+      if (refs.ghost === undefined || refs.hitbox === undefined) {
+        releaseEntity(refs.ghost)
+        releaseEntity(refs.hitbox)
+        refs.ghost  = placeGhost(slot)
+        refs.hitbox = placeHitbox(slot)
         repaired++
       }
-      if (isAlive(refs.solid))    { removeEntitySafe(refs.solid);    refs.solid    = undefined; repaired++ }
-      if (isAlive(refs.collider)) { removeEntitySafe(refs.collider); refs.collider = undefined; repaired++ }
+      if (refs.solid !== undefined)    { releaseEntity(refs.solid);    refs.solid    = undefined; repaired++ }
+      if (refs.collider !== undefined) { releaseEntity(refs.collider); refs.collider = undefined; repaired++ }
     }
   }
   if (repaired > 0) console.log(`[VISUAL-HEALTH] repaired=${repaired}`)
@@ -401,15 +616,22 @@ export function reconcileScene(): void {
     }
   }
 
-  if (phaseRebuild) logVisualSummary(`phase=${phase}`)
+  if (phaseRebuild) {
+    logVisualSummary(`phase=${phase}`)
+    const issues = runIntegrityCheck(slots, mask, phase) + logStrayPartMeshes()
+    // Always logged on transitions: a clean session must PROVE the checker ran.
+    console.log(`[INTEGRITY] ${issues === 0 ? 'ok' : `issues=${issues}`} at=transition phase=${phase}`)
+  }
 
-  // Periodic health audit — verify slotRefs state every second.
-  if (phase === 'BUILD' || phase === 'BUILD_COMPLETE') {
-    const now = Date.now()
-    if (now - healthAuditAtMs >= HEALTH_AUDIT_INTERVAL_MS) {
-      healthAuditAtMs = now
+  // Periodic health audit + integrity verification, every second in all phases.
+  const now = Date.now()
+  if (now - healthAuditAtMs >= HEALTH_AUDIT_INTERVAL_MS) {
+    healthAuditAtMs = now
+    if (phase === 'BUILD' || phase === 'BUILD_COMPLETE') {
       runHealthAudit(slots, mask, phase)
     }
+    const issues = runIntegrityCheck(slots, mask, phase) + logStrayPartMeshes()
+    if (issues > 0) console.log(`[INTEGRITY] issues=${issues} at=tick phase=${phase}`)
   }
 }
 

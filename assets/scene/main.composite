@@ -482,14 +482,9 @@
             "ageRating": "T",
             "categories": [],
             "author": "SDK",
-            "tags": [
-              ""
-            ],
+            "email": "",
+            "tags": [],
             "layout": {
-              "base": {
-                "x": 0,
-                "y": 0
-              },
               "parcels": [
                 {
                   "x": 0,
@@ -507,8 +502,14 @@
                   "x": 1,
                   "y": 0
                 }
-              ]
+              ],
+              "base": {
+                "x": 0,
+                "y": 0
+              }
             },
+            "silenceVoiceChat": false,
+            "disablePortableExperiences": false,
             "spawnPoints": [
               {
                 "name": "sp_south",
@@ -600,7 +601,9 @@
                 }
               }
             ],
-            "skyboxConfig": {}
+            "skyboxConfig": {},
+            "creator": "",
+            "disableNearbyVoiceChat": false
           }
         }
       }

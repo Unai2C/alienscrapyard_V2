@@ -1,7 +1,7 @@
 import { VirtualCamera, MainCamera, Transform, engine } from '@dcl/sdk/ecs'
 import { Vector3, Quaternion } from '@dcl/sdk/math'
 import { getClientSnapshot } from './client'
-import { setCarriedVisible } from './hud'
+import { setCarriedVisible, setCinematicCameraActive } from './hud'
 import {
   COUNTDOWN_SECONDS,
   PERFORMANCE_DURATION_SECONDS,
@@ -45,6 +45,8 @@ VirtualCamera.create(camEntity, {
 
 let lastPhase: RoundPhase = 'IDLE'
 let cinematicActive = false
+let cameraEngaged = false
+let cameraProbed = false
 let elapsed = 0
 let shotIndex = 0
 let currentShot: Shot = SHOTS[0]
@@ -57,6 +59,7 @@ function activateCinematic(round: number): void {
   elapsed = 0
   cinematicActive = true
   cinematicStartRound = round
+  cameraProbed = false
   setCarriedVisible(false)
 
   const t = Transform.getMutable(camEntity)
@@ -64,16 +67,26 @@ function activateCinematic(round: number): void {
   t.rotation = Quaternion.fromEulerDegrees(currentShot.pitch, currentShot.yaw, 0)
   try {
     MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: camEntity })
-  } catch (_) {}
-  console.log(`[CINEMATIC] start round=${round} shot=${shotIndex - 1}`)
+    cameraEngaged = true
+  } catch (err) {
+    cameraEngaged = false
+    console.log(`[CINEMATIC] MainCamera assign FAILED: ${err}`)
+  }
+  // Letterbox must follow the real camera state, never the phase alone.
+  setCinematicCameraActive(cameraEngaged)
+  console.log(`[CINEMATIC] start round=${round} shot=${shotIndex - 1} engaged=${cameraEngaged}`)
 }
 
 function releaseCinematic(reason: string): void {
   if (!cinematicActive) return
   cinematicActive = false
+  cameraEngaged = false
+  setCinematicCameraActive(false)
   try {
     MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: undefined })
-  } catch (_) {}
+  } catch (err) {
+    console.log(`[CINEMATIC] MainCamera release FAILED: ${err}`)
+  }
   console.log(`[CINEMATIC] release reason=${reason} elapsed=${elapsed.toFixed(1)}s`)
 }
 
@@ -103,7 +116,12 @@ export function cinematicSystem(dt: number): void {
       setCarriedVisible(false)
       activateCinematic(snap.roundNumber)
     } else if (phase === 'PERFORM' || phase === 'RESET') {
-      // Keep camera running; no extra work needed.
+      // Late joiners land here without having gone through COUNTDOWN;
+      // start the cinematic now. The watchdog releases it when the round advances.
+      if (!cinematicActive) {
+        setCarriedVisible(false)
+        activateCinematic(snap.roundNumber)
+      }
     } else if (phase === 'BUILD' || phase === 'IDLE') {
       releaseCinematic('phase_build')
       setCarriedVisible(true)
@@ -113,6 +131,29 @@ export function cinematicSystem(dt: number): void {
   if (!cinematicActive) return
 
   elapsed += dt
+
+  // One-shot probe ~1s into the shot: compare the actual render camera
+  // position against the virtual camera. dist≈0 means the explorer honored
+  // the VirtualCamera; a large dist means it was silently ignored and the
+  // player is still in first/third person.
+  if (!cameraProbed && elapsed >= 1) {
+    cameraProbed = true
+    try {
+      const cam = Transform.get(engine.CameraEntity).position
+      const virt = Transform.get(camEntity).position
+      const dx = cam.x - virt.x
+      const dy = cam.y - virt.y
+      const dz = cam.z - virt.z
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      console.log(
+        `[CINEMATIC] probe dist=${dist.toFixed(2)} honored=${dist < 2} ` +
+        `cam=(${cam.x.toFixed(1)},${cam.y.toFixed(1)},${cam.z.toFixed(1)}) ` +
+        `virt=(${virt.x.toFixed(1)},${virt.y.toFixed(1)},${virt.z.toFixed(1)})`
+      )
+    } catch (err) {
+      console.log(`[CINEMATIC] probe FAILED: ${err}`)
+    }
+  }
 
   // Watchdog A: server has moved on to a new round.
   // Watchdog B: hard elapsed limit.

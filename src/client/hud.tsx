@@ -13,6 +13,7 @@ import { getClientSnapshot } from './client'
 let selectedIndex = 0
 let shoulderEntity: Entity = 0 as Entity
 let carriedVisible = true
+let cinematicCameraActive = false
 let feedbackText = ''
 let feedbackTimer = 0
 let showOnboarding = true
@@ -39,6 +40,14 @@ export function onWrongPart(required: PartType): void {
 
 export function dismissOnboarding(): void {
   if (!onboardingDismissed) onboardingDismissed = true
+}
+
+// Set by cinematic.ts with the REAL camera state — true only when the
+// VirtualCamera assignment succeeded. The letterbox keys off this, so a
+// client whose explorer rejects the virtual camera keeps its normal view
+// instead of getting black bars over first person.
+export function setCinematicCameraActive(active: boolean): void {
+  cinematicCameraActive = active
 }
 
 //  Audio 
@@ -100,8 +109,19 @@ export function hudInputSystem(_dt: number): void {
   }
 }
 
-//  Per-frame ticks 
+//  Per-frame ticks
+let lastHudPhase: RoundPhase = 'IDLE'
+
 export function hudTickSystem(dt: number): void {
+  // Feedback messages are BUILD-phase interaction hints; drop them on any
+  // phase change so they never overlap the cinematic letterbox.
+  const phase = getClientSnapshot().phase
+  if (phase !== lastHudPhase) {
+    lastHudPhase = phase
+    feedbackText = ''
+    feedbackTimer = 0
+  }
+
   if (feedbackTimer > 0) {
     feedbackTimer = Math.max(0, feedbackTimer - dt)
     if (feedbackTimer <= 0) feedbackText = ''
@@ -144,8 +164,8 @@ export function initHUD(): void {
     const snap = getClientSnapshot()
     const phase = snap.phase
     const inBuild = phase === 'BUILD' && !snap.isStale
-    // Letterbox only during the actual cinematic camera phases (COUNTDOWN onward).
-    const inCinematic = (phase === 'COUNTDOWN' || phase === 'PERFORM' || phase === 'RESET') && !snap.isStale
+    // Letterbox only while the cinematic camera is genuinely driving the view.
+    const inCinematic = cinematicCameraActive && !snap.isStale
     const syncing = !snap.resolved || snap.isStale
 
     const partsRequired = Math.max(1, snap.partsRequired)
@@ -187,46 +207,46 @@ export function initHUD(): void {
           />
         </UiEntity>
 
+        {/* All conditional blocks below stay permanently mounted and toggle
+            via display — unmount/remount churn of UI entities desyncs the
+            Unity renderer (icons/text dropped or ghosted). */}
+
         {/* Progress bar */}
-        {inBuild && (
+        <UiEntity
+          uiTransform={{ positionType: 'absolute', position: { top: 60, left: 576 }, width: 768, height: 14, display: inBuild ? 'flex' : 'none' }}
+          uiBackground={{ color: { r: 0.1, g: 0.1, b: 0.1, a: 0.7 } }}
+        >
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 60, left: 576 }, width: 768, height: 14 }}
-            uiBackground={{ color: { r: 0.1, g: 0.1, b: 0.1, a: 0.7 } }}
-          >
-            <UiEntity
-              uiTransform={{ width: `${pct}%`, height: 14 }}
-              uiBackground={{ color: { r: 0.15, g: 0.75, b: 0.3, a: 1 } }}
-            />
-          </UiEntity>
-        )}
+            uiTransform={{ width: `${pct}%`, height: 14 }}
+            uiBackground={{ color: { r: 0.15, g: 0.75, b: 0.3, a: 1 } }}
+          />
+        </UiEntity>
 
         {/* Progress label */}
-        {inBuild && (
-          <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 78, left: 576 }, width: 768, height: 20, alignItems: 'center', justifyContent: 'center' }}
-          >
-            <Label
-              value={`${snap.partsAttached} / ${snap.partsRequired}`}
-              fontSize={12}
-              color={{ r: 0.85, g: 0.85, b: 1, a: 1 }}
-              uiTransform={{ width: '100%', height: '100%' }}
-              textAlign='middle-center'
-            />
-          </UiEntity>
-        )}
+        <UiEntity
+          uiTransform={{ positionType: 'absolute', position: { top: 78, left: 576 }, width: 768, height: 20, alignItems: 'center', justifyContent: 'center', display: inBuild ? 'flex' : 'none' }}
+        >
+          <Label
+            value={`${snap.partsAttached} / ${snap.partsRequired}`}
+            fontSize={12}
+            color={{ r: 0.85, g: 0.85, b: 1, a: 1 }}
+            uiTransform={{ width: '100%', height: '100%' }}
+            textAlign='middle-center'
+          />
+        </UiEntity>
 
         {/* Piece picker */}
-        {inBuild && (
-          <UiEntity
-            uiTransform={{
-              positionType: 'absolute',
-              position: { top: 110, left: 740 },
-              width: 440, height: 104,
-              flexDirection: 'column',
-              alignItems: 'center'
-            }}
-            uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
-          >
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { top: 110, left: 740 },
+            width: 440, height: 104,
+            flexDirection: 'column',
+            alignItems: 'center',
+            display: inBuild ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
+        >
             <Label
               value='CURRENT BLOCK'
               fontSize={10}
@@ -270,37 +290,34 @@ export function initHUD(): void {
               uiTransform={{ width: '100%', height: 18 }}
               textAlign='middle-center'
             />
-          </UiEntity>
-        )}
+        </UiEntity>
 
         {/* Feedback — bottom bar */}
-        {feedbackText !== '' && (
-          <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 1020, left: 480 }, width: 960, height: 38, alignItems: 'center', justifyContent: 'center' }}
-            uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
-          >
-            <Label
-              value={feedbackText}
-              fontSize={14}
-              color={{ r: 1, g: 1, b: 1, a: 1 }}
-              uiTransform={{ width: '100%', height: '100%' }}
-              textAlign='middle-center'
-            />
-          </UiEntity>
-        )}
+        <UiEntity
+          uiTransform={{ positionType: 'absolute', position: { top: 1020, left: 480 }, width: 960, height: 38, alignItems: 'center', justifyContent: 'center', display: feedbackText !== '' ? 'flex' : 'none' }}
+          uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
+        >
+          <Label
+            value={feedbackText}
+            fontSize={14}
+            color={{ r: 1, g: 1, b: 1, a: 1 }}
+            uiTransform={{ width: '100%', height: '100%' }}
+            textAlign='middle-center'
+          />
+        </UiEntity>
 
         {/* Onboarding */}
-        {showOnboarding && !inCinematic && !syncing && (
-          <UiEntity
-            uiTransform={{
-              positionType: 'absolute',
-              position: { top: 200, left: 480 },
-              width: 960,
-              flexDirection: 'column',
-              alignItems: 'center'
-            }}
-            uiBackground={{ color: { r: 0.03, g: 0.03, b: 0.15, a: 0.95 * onboardingAlpha } }}
-          >
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { top: 200, left: 480 },
+            width: 960,
+            flexDirection: 'column',
+            alignItems: 'center',
+            display: showOnboarding && !inCinematic && !syncing ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0.03, g: 0.03, b: 0.15, a: 0.95 * onboardingAlpha } }}
+        >
             <Label
               value='DECENTRALAND BUILDER'
               fontSize={42}
@@ -323,33 +340,30 @@ export function initHUD(): void {
               textAlign='middle-center'
             />
             <Label value=' ' fontSize={6} color={{ r: 0, g: 0, b: 0, a: 0 }} uiTransform={{ width: '100%', height: 10 }} textAlign='middle-center' />
-          </UiEntity>
-        )}
+        </UiEntity>
 
         {/* Cinematic letterbox */}
-        {inCinematic && (
-          <UiEntity uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: '100%', height: '100%' }}>
-            <UiEntity
-              uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: 1920, height: 140 }}
-              uiBackground={{ color: { r: 0, g: 0, b: 0, a: 1 } }}
+        <UiEntity uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: '100%', height: '100%', display: inCinematic ? 'flex' : 'none' }}>
+          <UiEntity
+            uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: 1920, height: 140 }}
+            uiBackground={{ color: { r: 0, g: 0, b: 0, a: 1 } }}
+          />
+          <UiEntity
+            uiTransform={{ positionType: 'absolute', position: { top: 940, left: 0 }, width: 1920, height: 140 }}
+            uiBackground={{ color: { r: 0, g: 0, b: 0, a: 1 } }}
+          />
+          <UiEntity
+            uiTransform={{ positionType: 'absolute', position: { top: 380, left: 0 }, width: 1920, height: 80, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Label
+              value='NEXT ROUND'
+              fontSize={48}
+              color={{ r: 1, g: 1, b: 1, a: 1 }}
+              uiTransform={{ width: '100%', height: 80 }}
+              textAlign='middle-center'
             />
-            <UiEntity
-              uiTransform={{ positionType: 'absolute', position: { top: 940, left: 0 }, width: 1920, height: 140 }}
-              uiBackground={{ color: { r: 0, g: 0, b: 0, a: 1 } }}
-            />
-            <UiEntity
-              uiTransform={{ positionType: 'absolute', position: { top: 380, left: 0 }, width: 1920, height: 80, alignItems: 'center', justifyContent: 'center' }}
-            >
-              <Label
-                value='NEXT ROUND'
-                fontSize={48}
-                color={{ r: 1, g: 1, b: 1, a: 1 }}
-                uiTransform={{ width: '100%', height: 80 }}
-                textAlign='middle-center'
-              />
-            </UiEntity>
           </UiEntity>
-        )}
+        </UiEntity>
 
       </UiEntity>
     )
