@@ -1,7 +1,8 @@
 import {
   engine, Entity, Transform, GltfContainer, MeshCollider, MeshRenderer,
   Material, MaterialTransparencyMode, ColliderLayer,
-  InputAction, pointerEventsSystem, Schemas
+  InputAction, pointerEventsSystem, Schemas,
+  TextShape, Billboard, BillboardMode
 } from '@dcl/sdk/ecs'
 import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import { RoundState, ux } from '../shared/components'
@@ -84,7 +85,40 @@ const RESPAWN_POSITIONS = [
 ]
 const RESPAWN_LOOK_TARGET = Vector3.create(SCENE_CENTER.x, TEMPLATE_BASE_Y + 2, SCENE_CENTER.z)
 
-//  Materials 
+//  Trophy system
+const MAX_TROPHIES       = 5
+const TROPHY_BASE_Y      = TEMPLATE_BASE_Y + 3.5   // orbit centre height
+const TROPHY_ORBIT_R     = 5.5                      // metres from scene centre
+const TROPHY_ORBIT_SPD   = 0.22                     // rad/s
+const TROPHY_BOB_AMP     = 0.35                     // metres
+const TROPHY_BOB_SPD     = 0.9                      // rad/s
+const TROPHY_SPIN_RAD    = 55 * (Math.PI / 180)     // rad/s
+const TROPHY_SCALE       = 0.5                      // miniature scale factor
+const TROPHY_LABEL_Y_OFF = 2.0                      // metres above orbit centre
+
+interface TrophyBlock {
+  entity:      Entity
+  part:        PartType
+  localOffset: Vector3  // from trophy centre, already scaled × TROPHY_SCALE
+  baseScale:   Vector3
+  baseRot:     Quaternion
+}
+
+interface TrophyEntry {
+  blocks:      TrophyBlock[]
+  label:       Entity
+  orbitAngle:  number   // current angle (rad)
+  bobPhase:    number   // phase offset for sin bob
+  labelOffY:   number   // metres above orbit centre: top of tallest block + margin
+}
+
+const trophyBlockPool: Record<PartType, Entity[]> = { CUBE: [], CYLINDER: [], CONE: [] }
+const trophyLabelPool: Entity[] = []
+const trophies: TrophyEntry[] = []
+let trophyTime = 0
+let lastTrophyRound = -1
+
+//  Materials
 const PART_GLOW_COLOR: Record<PartType, Color4> = {
   CUBE:     Color4.create(0.1, 0.3, 1,   0.22),
   CYLINDER: Color4.create(1,   0.1, 0.1, 0.22),
@@ -297,6 +331,56 @@ function prewarmCinematicPools(): void {
   const particles = Math.min(maxSlots * PARTICLES_PER_BLOCK, MAX_PARTICLES)
   for (let i = 0; i < particles; i++) particlePoolFree.push(createParticleEntity())
   console.log(`[CINEMATIC] prewarmed particles=${particles}`)
+}
+
+function prewarmTrophyPools(): void {
+  const maxPerPart: Record<PartType, number> = { CUBE: 0, CYLINDER: 0, CONE: 0 }
+  for (const id of Object.keys(TEMPLATES)) {
+    const slots = TEMPLATES[id as TemplateId]
+    const cnt: Record<PartType, number> = { CUBE: 0, CYLINDER: 0, CONE: 0 }
+    for (const s of slots) cnt[s.requiredPart]++
+    for (const p of PART_TYPES) maxPerPart[p] = Math.max(maxPerPart[p], cnt[p])
+  }
+  let total = 0
+  for (const p of PART_TYPES) {
+    for (let i = 0; i < MAX_TROPHIES * maxPerPart[p]; i++) {
+      const e = engine.addEntity()
+      Transform.create(e, {
+        position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
+        scale: Vector3.Zero(),
+        rotation: Quaternion.Identity()
+      })
+      GltfContainer.create(e, {
+        src: PART_GLB[p],
+        visibleMeshesCollisionMask: 0,
+        invisibleMeshesCollisionMask: 0
+      })
+      trophyBlockPool[p].push(e)
+      total++
+    }
+  }
+  for (let i = 0; i < MAX_TROPHIES; i++) {
+    const e = engine.addEntity()
+    Transform.create(e, {
+      position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
+      scale: Vector3.One(),
+      rotation: Quaternion.Identity()
+    })
+    TextShape.create(e, {
+      text: '',
+      fontSize: 3,
+      textColor: { r: 1, g: 1, b: 1, a: 0.95 },
+      outlineColor: { r: 0, g: 0, b: 0 },
+      outlineWidth: 0.08
+    })
+    Billboard.create(e, { billboardMode: BillboardMode.BM_Y })
+    trophyLabelPool.push(e)
+    total++
+  }
+  console.log(
+    `[TROPHY] prewarmed total=${total} cube=${MAX_TROPHIES * maxPerPart.CUBE} ` +
+    `cyl=${MAX_TROPHIES * maxPerPart.CYLINDER} cone=${MAX_TROPHIES * maxPerPart.CONE}`
+  )
 }
 
 function spawnParticlesAt(pos: Vector3): void {
@@ -685,6 +769,7 @@ export function initScene(getPart: () => PartType): void {
   getSelectedPartFn = getPart
   prewarmPools()
   if (CINEMATIC_ANIM_ENABLED) prewarmCinematicPools()
+  prewarmTrophyPools()
 
   ux.on('wrongPart', (data: any) => {
     if (!data) return
@@ -930,6 +1015,11 @@ export function reconcileScene(): void {
     const issues = runIntegrityCheck(slots, mask, phase) + logStrayPartMeshes()
     // Always logged on transitions: a clean session must PROVE the checker ran.
     console.log(`[INTEGRITY] ${issues === 0 ? 'ok' : `issues=${issues}`} at=transition phase=${phase}`)
+
+    if (phase === 'BUILD_COMPLETE' && snap.performanceType === 'PERFECT' && snap.roundNumber !== lastTrophyRound) {
+      lastTrophyRound = snap.roundNumber
+      spawnTrophy(snap)
+    }
   }
 
   // Periodic health audit + integrity verification, every second in all phases.
@@ -944,7 +1034,118 @@ export function reconcileScene(): void {
   }
 }
 
-//  Click handler 
+//  Trophy spawn / release / animation
+
+function releaseTrophyEntry(entry: TrophyEntry): void {
+  for (const b of entry.blocks) {
+    trophyBlockPool[b.part].push(b.entity)
+    try {
+      const t = Transform.getMutable(b.entity)
+      t.scale = Vector3.Zero()
+      t.position = Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z)
+    } catch (_) {}
+  }
+  trophyLabelPool.push(entry.label)
+  try {
+    Transform.getMutable(entry.label).position = Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z)
+  } catch (_) {}
+  try { TextShape.getMutable(entry.label).text = '' } catch (_) {}
+}
+
+function spawnTrophy(snap: ClientSnapshot): void {
+  const slots = getTemplate(snap.templateId)
+  if (!slots) return
+
+  if (trophies.length >= MAX_TROPHIES) {
+    const old = trophies.shift()!
+    releaseTrophyEntry(old)
+  }
+
+  const blocks: TrophyBlock[] = []
+  const mask = snap.occupiedMask | 0
+  for (let i = 0; i < slots.length; i++) {
+    if (((mask >> i) & 1) === 0) continue
+    const slot = slots[i]
+    const part = slot.requiredPart
+    const e = trophyBlockPool[part].pop()
+    if (e === undefined) { console.log(`[TROPHY] pool exhausted for part=${part}`); continue }
+    const localOffset = Vector3.create(
+      (slot.position.x - SCENE_CENTER.x) * TROPHY_SCALE,
+      (slot.position.y - TEMPLATE_BASE_Y) * TROPHY_SCALE,
+      (slot.position.z - SCENE_CENTER.z) * TROPHY_SCALE
+    )
+    const baseScale = Vector3.create(
+      slot.scale.x * GLB_SCALE * TROPHY_SCALE,
+      slot.scale.y * GLB_SCALE * TROPHY_SCALE,
+      slot.scale.z * GLB_SCALE * TROPHY_SCALE
+    )
+    blocks.push({ entity: e, part, localOffset, baseScale, baseRot: partRotation(part) })
+  }
+
+  const label = trophyLabelPool.pop() ?? (() => {
+    const e = engine.addEntity()
+    Transform.create(e, { position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z), scale: Vector3.One(), rotation: Quaternion.Identity() })
+    TextShape.create(e, { text: '', fontSize: 3, textColor: { r: 1, g: 1, b: 1, a: 0.95 }, outlineColor: { r: 0, g: 0, b: 0 }, outlineWidth: 0.08 })
+    Billboard.create(e, { billboardMode: BillboardMode.BM_Y })
+    return e
+  })()
+
+  const nameLines = snap.builders ? snap.builders.split(', ').join('\n') : ''
+  const labelText  = nameLines ? `built by:\n${nameLines}` : 'PERFECT!'
+  try { TextShape.getMutable(label).text = labelText } catch (_) {}
+
+  let topExtent = 0
+  for (const b of blocks) {
+    topExtent = Math.max(topExtent, b.localOffset.y + b.baseScale.y * 0.5)
+  }
+  const labelOffY  = topExtent + 1.2   // clearance above tallest block (text anchors at centre, names hang down)
+
+  const startAngle = (trophies.length / MAX_TROPHIES) * Math.PI * 2
+  const bobPhase   = startAngle
+  trophies.push({ blocks, label, orbitAngle: startAngle, bobPhase, labelOffY })
+
+  console.log(`[TROPHY] spawned round=${snap.roundNumber} builders="${snap.builders}" blocks=${blocks.length} total=${trophies.length}`)
+}
+
+function updateTrophies(dt: number): void {
+  trophyTime += dt
+  const spinDeg = trophyTime * 55
+  const spinRad = trophyTime * TROPHY_SPIN_RAD
+  const cosS = Math.cos(spinRad)
+  const sinS = Math.sin(spinRad)
+  const spinQuat = Quaternion.fromEulerDegrees(0, spinDeg, 0)
+
+  for (const entry of trophies) {
+    entry.orbitAngle += TROPHY_ORBIT_SPD * dt
+    const bob = Math.sin(trophyTime * TROPHY_BOB_SPD + entry.bobPhase) * TROPHY_BOB_AMP
+    const cx = SCENE_CENTER.x + Math.cos(entry.orbitAngle) * TROPHY_ORBIT_R
+    const cz = SCENE_CENTER.z + Math.sin(entry.orbitAngle) * TROPHY_ORBIT_R
+    const cy = TROPHY_BASE_Y + bob
+
+    for (const b of entry.blocks) {
+      const lx = b.localOffset.x
+      const lz = b.localOffset.z
+      const rx = cosS * lx - sinS * lz
+      const rz = sinS * lx + cosS * lz
+      try {
+        const t = Transform.getMutable(b.entity)
+        t.position = Vector3.create(cx + rx, cy + b.localOffset.y, cz + rz)
+        t.scale = b.baseScale
+        t.rotation = Quaternion.multiply(spinQuat, b.baseRot)
+      } catch (_) {}
+    }
+
+    try {
+      Transform.getMutable(entry.label).position = Vector3.create(cx, cy + entry.labelOffY, cz)
+    } catch (_) {}
+  }
+}
+
+export function trophySystem(dt: number): void {
+  if (trophies.length > 0) updateTrophies(dt)
+}
+
+//  Click handler
 function clearAntiSpam(slotId: string): void {
   recentClicks.delete(slotId)
 }

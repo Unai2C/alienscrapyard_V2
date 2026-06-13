@@ -13,6 +13,7 @@ export const RoundState = engine.defineComponent('dbc:RoundState', {
   partsRequired:   Schemas.Int,
   occupiedMask:    Schemas.Int,
   performanceType: Schemas.String,
+  builders:        Schemas.String,
   stateSeq:        Schemas.Int
 })
 
@@ -26,6 +27,7 @@ export const GameTimer = engine.defineComponent('dbc:GameTimer', {
 export const AttachRequest = engine.defineComponent('dbc:AttachRequest', {
   requestId:   Schemas.String,
   playerId:    Schemas.String,
+  displayName: Schemas.String,
   slotId:      Schemas.String,
   partType:    Schemas.String,
   templateId:  Schemas.String,

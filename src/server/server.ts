@@ -22,7 +22,8 @@ let currentPhase: RoundPhase = 'IDLE'
 let templateIndex = 0
 let timerAccumulator = 0
 
-const slotPlacedBy: Record<string, string> = {}
+const slotPlacedBy:     Record<string, string> = {}
+const slotPlacedByName: Record<string, string> = {}
 const processedRequestIds: Record<string, true> = {}
 
 export function initServer(): void {
@@ -35,6 +36,7 @@ export function initServer(): void {
     partsRequired: TEMPLATES[TEMPLATE_ORDER[0]].length,
     occupiedMask: 0,
     performanceType: '',
+    builders: '',
     stateSeq: 0
   })
   syncEntity(roundEntity, [RoundState.componentId], ROUND_ENTITY_ENUM_ID)
@@ -80,11 +82,13 @@ function enterBuild(): void {
   rs.partsRequired = required
   rs.occupiedMask = 0
   rs.performanceType = ''
+  rs.builders = ''
   rs.stateSeq = (rs.stateSeq || 0) + 1
 
   currentPhase = 'BUILD'
 
-  for (const k of Object.keys(slotPlacedBy)) delete slotPlacedBy[k]
+  for (const k of Object.keys(slotPlacedBy))     delete slotPlacedBy[k]
+  for (const k of Object.keys(slotPlacedByName)) delete slotPlacedByName[k]
   for (const k of Object.keys(processedRequestIds)) delete processedRequestIds[k]
 
   setTimerSeconds(BUILD_DURATION_SECONDS)
@@ -96,11 +100,23 @@ function enterBuildComplete(reason: 'perfect' | 'timeout'): void {
   if (currentPhase !== 'BUILD') return
   const rs = RoundState.getMutable(roundEntity)
   rs.performanceType = getPerformanceType(rs.partsAttached, rs.partsRequired)
+
+  if (rs.performanceType === 'PERFECT') {
+    const seen = new Set<string>()
+    const names: string[] = []
+    for (const name of Object.values(slotPlacedByName)) {
+      if (!seen.has(name) && names.length < 5) { seen.add(name); names.push(name) }
+    }
+    rs.builders = names.join(', ')
+  } else {
+    rs.builders = ''
+  }
+
   setPhase('BUILD_COMPLETE')
   setTimerSeconds(BUILD_COMPLETE_SECONDS)
   console.log(
     `[SERVER] BUILD_COMPLETE reason=${reason} round=${rs.roundNumber} ` +
-    `parts=${rs.partsAttached}/${rs.partsRequired} perf=${rs.performanceType}`
+    `parts=${rs.partsAttached}/${rs.partsRequired} perf=${rs.performanceType} builders="${rs.builders}"`
   )
 }
 
@@ -130,6 +146,7 @@ function enterReset(): void {
 function handleAttachRequest(
   requestId: string,
   playerId: string,
+  displayName: string,
   slotId: string,
   partType: string,
   templateId: string,
@@ -175,7 +192,8 @@ function handleAttachRequest(
   rs.occupiedMask = (rs.occupiedMask ?? 0) | occupiedBit
   rs.partsAttached += 1
   rs.stateSeq = (rs.stateSeq || 0) + 1
-  slotPlacedBy[slotId] = playerId
+  slotPlacedBy[slotId]     = playerId
+  slotPlacedByName[slotId] = displayName || playerId.slice(0, 8)
 
   console.log(
     `[SERVER] accept ${requestId} player=${playerId.slice(0, 8)} slot=${slotId} ` +
@@ -188,8 +206,8 @@ function handleAttachRequest(
 function drainAttachRequests(): void {
   for (const [entity, req] of engine.getEntitiesWith(AttachRequest)) {
     handleAttachRequest(
-      req.requestId, req.playerId, req.slotId,
-      req.partType, req.templateId, req.roundNumber
+      req.requestId, req.playerId, req.displayName ?? '',
+      req.slotId, req.partType, req.templateId, req.roundNumber
     )
     try { engine.removeEntity(entity) } catch (_) {}
   }

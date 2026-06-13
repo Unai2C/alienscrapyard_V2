@@ -30,6 +30,7 @@ export interface ClientSnapshot {
   partsRequired: number
   occupiedMask: number
   performanceType: string
+  builders: string
   secondsLeft: number
   stateSeq: number
   ageMs: number
@@ -39,7 +40,7 @@ export interface ClientSnapshot {
 export function getClientSnapshot(): ClientSnapshot {
   const empty: ClientSnapshot = {
     resolved: false, phase: 'IDLE', roundNumber: 0, templateId: '',
-    partsAttached: 0, partsRequired: 0, occupiedMask: 0, performanceType: '',
+    partsAttached: 0, partsRequired: 0, occupiedMask: 0, performanceType: '', builders: '',
     secondsLeft: 0, stateSeq: 0, ageMs: Number.POSITIVE_INFINITY, isStale: true
   }
   if (!roundEntity || roundEntity === (0 as Entity)) return empty
@@ -58,6 +59,7 @@ export function getClientSnapshot(): ClientSnapshot {
       partsRequired: rs.partsRequired,
       occupiedMask: rs.occupiedMask ?? 0,
       performanceType: rs.performanceType,
+      builders: rs.builders ?? '',
       secondsLeft,
       stateSeq: rs.stateSeq ?? 0,
       ageMs,
@@ -159,6 +161,7 @@ export function requestAttach(slotId: string, partType: string): string {
   AttachRequest.create(e, {
     requestId,
     playerId: localPlayerId,
+    displayName: localDisplayName,
     slotId,
     partType,
     templateId,
