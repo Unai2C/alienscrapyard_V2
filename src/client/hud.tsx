@@ -11,7 +11,12 @@ import {
 import { getClientSnapshot } from './client'
 
 let selectedIndex = 0
-let shoulderEntity: Entity = 0 as Entity
+// One persistent entity per piece type, each with its GLB loaded once at
+// init. Cycling pieces only toggles which one is visible (scale) — the GLB
+// src is never swapped on a live entity, which the Unity renderer fails to
+// reinstantiate (the same churn that broke slot visuals).
+const shoulderEntities: Entity[] = []
+const SHOULDER_SCALE = 0.286
 let carriedVisible = true
 let cinematicCameraActive = false
 let feedbackText = ''
@@ -51,33 +56,45 @@ export function setCinematicCameraActive(active: boolean): void {
 }
 
 //  Audio
-// One persistent entity per one-shot sound. Retriggering replaces the
-// AudioSource component in place — no entities are created or removed
-// during gameplay (zero-churn doctrine).
-let pressSoundEntity: Entity = 0 as Entity
-let successSoundEntity: Entity = 0 as Entity
+// One-shot SFX use a small round-robin pool of "voice" entities. A single
+// AudioSource can only voice one instance at a time, so two rapid clicks on
+// the same entity just restart the sound — you never hear both. Cycling
+// through N voices lets back-to-back plays overlap. All voices are created
+// once at init; gameplay only retriggers them (zero entity churn).
+const SFX_VOICES = 6
+const successVoices: Entity[] = []
+const pressVoices: Entity[] = []
+let successCursor = 0
+let pressCursor = 0
 
-function createSoundEntity(): Entity {
+function createVoiceEntity(): Entity {
   const e = engine.addEntity()
   Transform.create(e, { position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 1, SCENE_CENTER.z) })
   return e
 }
 
-function playOneShot(e: Entity, url: string, volume: number): void {
-  if (e === (0 as Entity)) return
+function playVoice(voices: Entity[], cursor: number, url: string, volume: number): number {
+  if (voices.length === 0) return cursor
   try {
-    AudioSource.createOrReplace(e, { audioClipUrl: url, playing: true, loop: false, volume })
+    AudioSource.createOrReplace(voices[cursor], { audioClipUrl: url, playing: true, loop: false, volume })
   } catch (_) {}
+  return (cursor + 1) % voices.length
 }
 
 export function playSuccess(): void {
-  playOneShot(successSoundEntity, 'assets/sounds/success.mp3', 1.0)
+  successCursor = playVoice(successVoices, successCursor, 'assets/sounds/success.mp3', 1.0)
+}
+
+function playPress(): void {
+  pressCursor = playVoice(pressVoices, pressCursor, 'assets/sounds/pressE.mp3', 1.0)
 }
 
 function initAudio(): void {
   if (ambientEntity !== (0 as Entity)) return
-  pressSoundEntity = createSoundEntity()
-  successSoundEntity = createSoundEntity()
+  for (let i = 0; i < SFX_VOICES; i++) {
+    successVoices.push(createVoiceEntity())
+    pressVoices.push(createVoiceEntity())
+  }
   ambientEntity = engine.addEntity()
   Transform.create(ambientEntity, { position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 1, SCENE_CENTER.z) })
   AudioSource.create(ambientEntity, {
@@ -91,30 +108,39 @@ function initAudio(): void {
 
 //  Shoulder carried piece
 export function initShoulder(playerEntity: Entity): void {
-  if (shoulderEntity !== (0 as Entity)) return
-  shoulderEntity = engine.addEntity()
-  Transform.create(shoulderEntity, {
-    position: Vector3.create(0.5, 1.5, -0.5),
-    scale: carriedVisible ? Vector3.create(0.286, 0.286, 0.286) : Vector3.Zero(),
-    rotation: Quaternion.Identity(),
-    parent: playerEntity
-  })
-  GltfContainer.create(shoulderEntity, { src: PART_GLB[PART_TYPES[selectedIndex]] })
+  if (shoulderEntities.length > 0) return
+  for (let i = 0; i < PART_TYPES.length; i++) {
+    const e = engine.addEntity()
+    const show = carriedVisible && i === selectedIndex
+    Transform.create(e, {
+      position: Vector3.create(0.5, 1.5, -0.5),
+      scale: show ? Vector3.create(SHOULDER_SCALE, SHOULDER_SCALE, SHOULDER_SCALE) : Vector3.Zero(),
+      rotation: Quaternion.Identity(),
+      parent: playerEntity
+    })
+    GltfContainer.create(e, { src: PART_GLB[PART_TYPES[i]] })
+    shoulderEntities.push(e)
+  }
+}
+
+function applyShoulderVisibility(): void {
+  for (let i = 0; i < shoulderEntities.length; i++) {
+    const show = carriedVisible && i === selectedIndex
+    try {
+      Transform.getMutable(shoulderEntities[i]).scale = show
+        ? Vector3.create(SHOULDER_SCALE, SHOULDER_SCALE, SHOULDER_SCALE)
+        : Vector3.Zero()
+    } catch (_) {}
+  }
 }
 
 export function setCarriedVisible(visible: boolean): void {
   carriedVisible = visible
-  if (shoulderEntity === (0 as Entity)) return
-  try {
-    Transform.getMutable(shoulderEntity).scale = visible
-      ? Vector3.create(0.286, 0.286, 0.286)
-      : Vector3.Zero()
-  } catch (_) {}
+  applyShoulderVisibility()
 }
 
 function updateShoulderPiece(): void {
-  if (shoulderEntity === (0 as Entity)) return
-  GltfContainer.createOrReplace(shoulderEntity, { src: PART_GLB[PART_TYPES[selectedIndex]] })
+  applyShoulderVisibility()
 }
 
 //  Input 
@@ -122,7 +148,7 @@ export function hudInputSystem(_dt: number): void {
   if (inputSystem.isTriggered(InputAction.IA_PRIMARY, PointerEventType.PET_DOWN)) {
     selectedIndex = (selectedIndex + 1) % PART_TYPES.length
     updateShoulderPiece()
-    playOneShot(pressSoundEntity, 'assets/sounds/pressE.mp3', 1.0)
+    playPress()
     dismissOnboarding()
   }
 }
@@ -149,10 +175,10 @@ export function hudTickSystem(dt: number): void {
     if (onboardingAlpha <= 0) showOnboarding = false
   }
   floatTime += dt
-  if (shoulderEntity !== (0 as Entity)) {
+  const shoulderY = 1.5 + Math.sin(floatTime * 2.5) * 0.06
+  for (const e of shoulderEntities) {
     try {
-      const t = Transform.getMutable(shoulderEntity)
-      t.position = Vector3.create(0.5, 1.5 + Math.sin(floatTime * 2.5) * 0.06, -0.5)
+      Transform.getMutable(e).position = Vector3.create(0.5, shoulderY, -0.5)
     } catch (_) {}
   }
 }
@@ -278,6 +304,9 @@ export function initHUD(): void {
               {PART_TYPES.map(pt => {
                 const isSelected = pt === PART_TYPES[selectedIndex]
                 const col = PART_UI_COLOR[pt]
+                const tint = isSelected
+                  ? col
+                  : { r: col.r * 0.5, g: col.g * 0.5, b: col.b * 0.5, a: 0.6 }
                 return (
                   <UiEntity
                     key={pt}
@@ -287,16 +316,24 @@ export function initHUD(): void {
                       : { r: 0.02, g: 0.02, b: 0.1, a: 0.8 }
                     }}
                   >
-                    <Label
-                      value={PART_SYMBOL[pt]}
-                      fontSize={28}
-                      color={isSelected
-                        ? col
-                        : { r: col.r * 0.5, g: col.g * 0.5, b: col.b * 0.5, a: 0.6 }
-                      }
-                      uiTransform={{ width: '100%', height: '100%' }}
-                      textAlign='middle-center'
-                    />
+                    {pt === 'CYLINDER' ? (
+                      <UiEntity
+                        uiTransform={{ width: 34, height: 34 }}
+                        uiBackground={{
+                          texture: { src: 'assets/images/octagon.png' },
+                          textureMode: 'stretch',
+                          color: tint
+                        }}
+                      />
+                    ) : (
+                      <Label
+                        value={PART_SYMBOL[pt]}
+                        fontSize={28}
+                        color={tint}
+                        uiTransform={{ width: '100%', height: '100%' }}
+                        textAlign='middle-center'
+                      />
+                    )}
                   </UiEntity>
                 )
               })}
