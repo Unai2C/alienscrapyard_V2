@@ -4,7 +4,7 @@ import { getPlayer } from '@dcl/sdk/players'
 import { isAuthoritativeServer } from './shared/runtime'
 import { initServer } from './server/server'
 import { clientResolveSystem, setLocalPlayer, updateLocalDisplayName } from './client/client'
-import { initArena, initScene, reconcileScene } from './client/scene'
+import { initArena, initScene, reconcileScene, cinematicAnimSystem, CINEMATIC_ANIM_ENABLED } from './client/scene'
 import { initHUD, initShoulder, hudInputSystem, hudTickSystem, getSelectedPart } from './client/hud'
 import { cinematicSystem } from './client/cinematic'
 
@@ -54,10 +54,11 @@ function waitForPlayer(attempt = 0): Promise<void> {
       initShoulder(engine.PlayerEntity)
 
       // Register systems in priority order.
-      engine.addSystem(hudInputSystem,   2, 'dbc:hudInput')
-      engine.addSystem(reconcileScene,   3, 'dbc:scene')
-      engine.addSystem(hudTickSystem,    4, 'dbc:hudTick')
-      engine.addSystem(cinematicSystem,  5, 'dbc:cinematic')
+      engine.addSystem(hudInputSystem,      2, 'dbc:hudInput')
+      engine.addSystem(reconcileScene,      3, 'dbc:scene')
+      engine.addSystem(hudTickSystem,       4, 'dbc:hudTick')
+      engine.addSystem(cinematicSystem,     5, 'dbc:cinematic')
+      if (CINEMATIC_ANIM_ENABLED) engine.addSystem(cinematicAnimSystem, 6, 'dbc:cinematicAnim')
 
       // Poll until Decentraland profile delivers the real name (it can lag).
       refreshDisplayName(playerId, 0)

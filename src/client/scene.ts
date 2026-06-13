@@ -7,11 +7,20 @@ import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import { RoundState, ux } from '../shared/components'
 import {
   PartType, PART_TYPES, PART_GLB, GLB_SCALE,
-  SCENE_CENTER, DEBUG, RoundPhase
+  SCENE_CENTER, TEMPLATE_BASE_Y, DEBUG, RoundPhase
 } from '../shared/constants'
+import { movePlayerTo } from '~system/RestrictedActions'
 import { SlotDefinition, TEMPLATES, TemplateId, getTemplate } from '../shared/templates'
-import { getClientSnapshot, requestAttach, getLocalPlayerId } from './client'
+import { getClientSnapshot, requestAttach, getLocalPlayerId, ClientSnapshot } from './client'
 import { onWrongPart, showFeedback, playSuccess } from './hud'
+
+// Feature flag for #2 (cinematic dance + explosion). Turned OFF while we
+// isolate a "player falls into the void during the cinematic" bug that
+// appeared with this feature. When false: clones/particles are never
+// prewarmed and the anim system is never registered — the cutscene reverts to
+// the known-good pre-#2 behaviour (empty arena, camera only). Flip to true to
+// re-enable once the cause is found.
+export const CINEMATIC_ANIM_ENABLED = true
 
 //  Slot visual registry 
 
@@ -41,6 +50,10 @@ let activeRoundNumber = 0
 let lastBoardPhase: RoundPhase = 'IDLE'
 let getSelectedPartFn: () => PartType = () => 'CUBE'
 let arenaEntity: Entity = 0 as Entity
+// True while cinematic clones are dancing. Suppresses integrity position/scale
+// checks for slot solid GLBs, which are intentionally hidden (scale=0) so
+// the animated clones can display without z-fighting.
+let cinematicAnimating = false
 
 // Anti-spam: 400ms window after a click to avoid duplicate requests if the
 // pointer registers twice. Server dedupes too, but suppressing locally
@@ -59,6 +72,17 @@ let flashTokenSeq = 0
 // any entities that were silently lost.
 let healthAuditAtMs = 0
 const HEALTH_AUDIT_INTERVAL_MS = 1000
+
+// Four safe landing positions on the platform edges (N/S/E/W, 7m from center)
+// used when respawning the player at round transitions. Camera always aims at
+// the center of the build area.
+const RESPAWN_POSITIONS = [
+  Vector3.create(SCENE_CENTER.x,     TEMPLATE_BASE_Y + 1, SCENE_CENTER.z - 7), // south
+  Vector3.create(SCENE_CENTER.x + 7, TEMPLATE_BASE_Y + 1, SCENE_CENTER.z    ), // east
+  Vector3.create(SCENE_CENTER.x,     TEMPLATE_BASE_Y + 1, SCENE_CENTER.z + 7), // north
+  Vector3.create(SCENE_CENTER.x - 7, TEMPLATE_BASE_Y + 1, SCENE_CENTER.z    ), // west
+]
+const RESPAWN_LOOK_TARGET = Vector3.create(SCENE_CENTER.x, TEMPLATE_BASE_Y + 2, SCENE_CENTER.z)
 
 //  Materials 
 const PART_GLOW_COLOR: Record<PartType, Color4> = {
@@ -221,6 +245,273 @@ function releaseEntity(e: Entity | undefined): void {
   } catch (_) {}
   const key = poolKey(tag.kind as SlotKind, tag.part as PartType | '')
   ;(poolFree[key] || (poolFree[key] = [])).push(e)
+}
+
+//  Cinematic animation + explosion
+// During the inter-round cutscene the slot solid entities dance in place and
+// then burst into particles. We animate the ORIGINAL solid and collider entities
+// from slotRefs directly — no separate clone pool — so the structure is
+// physically walkable throughout the animation and entity count stays minimal.
+const PARTICLES_PER_BLOCK = 6
+const MAX_PARTICLES = 60
+
+// Each block's last animated position during PERFORM, so the explosion fires
+// from where the blocks actually were when the cutscene ended.
+const lastAnimPositions: Map<string, Vector3> = new Map()
+
+const particlePoolFree: Entity[] = []
+
+interface ExplosionParticle {
+  entity:  Entity
+  vx: number; vy: number; vz: number
+  life:    number
+  maxLife: number
+}
+const explosionParticles: ExplosionParticle[] = []
+
+function createParticleEntity(): Entity {
+  const e = engine.addEntity()
+  Transform.create(e, {
+    position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
+    scale: Vector3.Zero(),
+    rotation: Quaternion.Identity()
+  })
+  MeshRenderer.setBox(e)
+  // One shared warm-spark material, set once at prewarm. DCL dedupes identical
+  // materials, so all particles together count as a single material.
+  Material.setPbrMaterial(e, {
+    albedoColor:       { r: 1, g: 0.85, b: 0.4, a: 1 },
+    emissiveColor:     { r: 1, g: 0.8,  b: 0.3 },
+    emissiveIntensity: 4.0,
+    transparencyMode:  MaterialTransparencyMode.MTM_ALPHA_BLEND
+  })
+  return e
+}
+
+// Prewarm only particle pool — solids are already prewarmed by prewarmPools().
+function prewarmCinematicPools(): void {
+  let maxSlots = 0
+  for (const id of Object.keys(TEMPLATES)) {
+    maxSlots = Math.max(maxSlots, TEMPLATES[id as TemplateId].length)
+  }
+  const particles = Math.min(maxSlots * PARTICLES_PER_BLOCK, MAX_PARTICLES)
+  for (let i = 0; i < particles; i++) particlePoolFree.push(createParticleEntity())
+  console.log(`[CINEMATIC] prewarmed particles=${particles}`)
+}
+
+function spawnParticlesAt(pos: Vector3): void {
+  for (let p = 0; p < PARTICLES_PER_BLOCK; p++) {
+    const e = particlePoolFree.pop()
+    if (e === undefined) break
+    const theta = Math.random() * Math.PI * 2
+    const phi   = (Math.random() * 0.55 + 0.1) * Math.PI
+    const speed = 5 + Math.random() * 8
+    const vx = Math.sin(phi) * Math.cos(theta) * speed
+    const vy = Math.abs(Math.cos(phi)) * speed + 2
+    const vz = Math.sin(phi) * Math.sin(theta) * speed
+    const t = Transform.getMutable(e)
+    t.position = Vector3.create(pos.x, pos.y, pos.z)
+    t.scale    = Vector3.create(0.01, 0.01, 0.01)
+    explosionParticles.push({ entity: e, vx, vy, vz, life: 0, maxLife: 1.1 + Math.random() * 0.7 })
+  }
+}
+
+function triggerExplosion(): void {
+  for (const pos of lastAnimPositions.values()) spawnParticlesAt(pos)
+  lastAnimPositions.clear()
+  console.log(`[EXPLOSION] particles=${explosionParticles.length}`)
+}
+
+function updateExplosionParticles(dt: number): void {
+  let i = explosionParticles.length
+  while (i--) {
+    const p = explosionParticles[i]
+    p.life += dt
+    const t = p.life / p.maxLife
+    if (t >= 1.0) {
+      try {
+        const tr = Transform.getMutable(p.entity)
+        tr.scale = Vector3.Zero()
+        tr.position = Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z)
+      } catch (_) {}
+      particlePoolFree.push(p.entity)
+      explosionParticles.splice(i, 1)
+      continue
+    }
+    p.vy += -7.0 * dt
+    try {
+      const tr = Transform.getMutable(p.entity)
+      tr.position.x += p.vx * dt
+      tr.position.y += p.vy * dt
+      tr.position.z += p.vz * dt
+      const sc = t < 0.12 ? (t / 0.12) * 0.38 : 0.38 * (1 - (t - 0.12) / 0.88)
+      tr.scale = Vector3.create(Math.max(0, sc), Math.max(0, sc), Math.max(0, sc))
+    } catch (_) {}
+  }
+}
+
+// Resets all occupied slot solids and colliders to their base transforms after
+// the animation ends due to an unexpected phase exit or stale state.
+function resetAnimatedSolids(snap: ClientSnapshot): void {
+  const slots = getTemplate(snap.templateId)
+  if (!slots) return
+  const mask = snap.occupiedMask | 0
+  for (let i = 0; i < slots.length; i++) {
+    if (((mask >> i) & 1) === 0) continue
+    const slot = slots[i]
+    const refs = slotRefs[slot.slotId]
+    if (!refs) continue
+    const basePos   = slotPositionVector(slot)
+    const baseScale = slotScaleVector(slot)
+    if (refs.solid !== undefined) {
+      try {
+        const t = Transform.getMutable(refs.solid)
+        t.position = basePos
+        t.scale    = baseScale
+        t.rotation = partRotation(slot.requiredPart)
+      } catch (_) {}
+    }
+    if (refs.collider !== undefined) {
+      try {
+        const tc = Transform.getMutable(refs.collider)
+        tc.position = basePos
+        tc.scale    = baseScale
+      } catch (_) {}
+    }
+  }
+  lastAnimPositions.clear()
+}
+
+// Hides solid GLBs and physics colliders when the explosion fires (PERFORM→RESET).
+// Blocks vanish with the burst; the movePlayerTo in cinematicAnimSystem handles any fall.
+function hideAnimatedSolids(snap: ClientSnapshot): void {
+  const slots = getTemplate(snap.templateId)
+  if (!slots) return
+  const mask = snap.occupiedMask | 0
+  for (let i = 0; i < slots.length; i++) {
+    if (((mask >> i) & 1) === 0) continue
+    const refs = slotRefs[slots[i].slotId]
+    if (!refs) continue
+    if (refs.solid    !== undefined) try { Transform.getMutable(refs.solid).scale    = Vector3.Zero() } catch (_) {}
+    if (refs.collider !== undefined) try { Transform.getMutable(refs.collider).scale = Vector3.Zero() } catch (_) {}
+  }
+  lastAnimPositions.clear()
+}
+
+// Animates slot solid + collider entities directly during COUNTDOWN and PERFORM,
+// then bursts them into particles at PERFORM→RESET. The collider follows the
+// solid's position so the structure is walkable throughout the dance.
+let choreTime = 0
+let chorePhase: RoundPhase = 'IDLE'
+let choreVariant = 0
+let choreRound = 0
+let choreActive = false
+
+export function cinematicAnimSystem(dt: number): void {
+  const snap  = getClientSnapshot()
+  const phase = snap.phase
+  const round = snap.roundNumber
+
+  if (snap.isStale) {
+    if (choreActive) resetAnimatedSolids(snap)
+    choreActive = false
+    chorePhase = phase
+    choreRound = round
+    if (explosionParticles.length > 0) updateExplosionParticles(dt)
+    return
+  }
+
+  // Phase / round transitions.
+  if (phase !== chorePhase || round !== choreRound) {
+    if (chorePhase === 'PERFORM' && phase === 'RESET') {
+      triggerExplosion()
+      hideAnimatedSolids(snap)
+      movePlayerTo({
+        newRelativePosition: RESPAWN_POSITIONS[Math.floor(Math.random() * RESPAWN_POSITIONS.length)],
+        cameraTarget: RESPAWN_LOOK_TARGET
+      }).catch(() => {})
+      choreActive = false
+    } else if (choreActive && phase !== 'COUNTDOWN' && phase !== 'PERFORM') {
+      resetAnimatedSolids(snap)
+      choreActive = false
+    }
+
+    if (phase === 'COUNTDOWN') {
+      choreTime = 0
+      choreVariant = Math.floor(Math.random() * 2)
+      choreActive = true
+      console.log(`[CINEMATIC-ANIM] start round=${round} variant=${choreVariant === 1 ? 'ORBIT' : 'WAVE'}`)
+    } else if (phase === 'PERFORM' && !choreActive) {
+      // Late joiner missed COUNTDOWN: start animating from current positions.
+      choreTime = 0
+      choreActive = true
+    }
+
+    chorePhase = phase
+    choreRound = round
+  }
+
+  if (explosionParticles.length > 0) updateExplosionParticles(dt)
+
+  if (!choreActive || (phase !== 'COUNTDOWN' && phase !== 'PERFORM')) return
+
+  choreTime += dt
+  const slots = getTemplate(snap.templateId)
+  if (!slots) return
+
+  const mask      = snap.occupiedMask | 0
+  const n         = Math.max(slots.length, 1)
+  const spinSpeed = phase === 'COUNTDOWN' ? 140 : 85
+
+  for (let i = 0; i < slots.length; i++) {
+    if (((mask >> i) & 1) === 0) continue
+    const slot  = slots[i]
+    const refs  = slotRefs[slot.slotId]
+    if (!refs?.solid) continue
+
+    const basePos   = slotPositionVector(slot)
+    const baseScale = slotScaleVector(slot)
+    const baseRot   = partRotation(slot.requiredPart)
+    const pOff = (i / n) * Math.PI * 2
+    let yBounce: number, scaleMod: number, spinDeg: number, driftX: number, driftZ: number
+
+    if (choreVariant === 1) {
+      // ORBIT: each block orbits its base XZ position at a unique speed.
+      const orbitSpd = 1.8 + (i % 3) * 0.7
+      const orbitAng = choreTime * orbitSpd + pOff
+      driftX   = Math.cos(orbitAng) * 0.35
+      driftZ   = Math.sin(orbitAng) * 0.35
+      yBounce  = Math.sin(choreTime * 2.0 + pOff * 0.5) * 0.35
+      scaleMod = 1 + Math.sin(choreTime * 2.5) * 0.25
+      spinDeg  = choreTime * spinSpeed + (pOff * 180 / Math.PI)
+    } else {
+      // WAVE: stadium wave, alternating spin, XZ micro-drift.
+      const spinDir = (i % 2 === 0) ? 1 : -1
+      yBounce  = Math.sin(choreTime * 3.2 + pOff) * 0.50
+      scaleMod = 1 + Math.sin(choreTime * 4.0 + pOff + Math.PI * 0.35) * 0.30
+      spinDeg  = choreTime * spinSpeed * spinDir + (pOff * 180 / Math.PI)
+      driftX   = Math.cos(choreTime * 2.0 + pOff) * 0.10
+      driftZ   = Math.sin(choreTime * 2.0 + pOff + 1.1) * 0.10
+    }
+
+    const animPos = Vector3.create(basePos.x + driftX, basePos.y + yBounce, basePos.z + driftZ)
+    if (phase === 'PERFORM') lastAnimPositions.set(slot.slotId, animPos)
+
+    try {
+      const t = Transform.getMutable(refs.solid)
+      t.position = animPos
+      t.scale    = Vector3.create(baseScale.x * scaleMod, baseScale.y * scaleMod, baseScale.z * scaleMod)
+      t.rotation = Quaternion.multiply(Quaternion.fromEulerDegrees(0, spinDeg, 0), baseRot)
+    } catch (_) {}
+
+    // Collider follows the solid's position so the block remains physically
+    // walkable. Keep base scale/rotation on the physics box to avoid jitter.
+    if (refs.collider !== undefined) {
+      try {
+        Transform.getMutable(refs.collider).position = animPos
+      } catch (_) {}
+    }
+  }
 }
 
 function tagVisual(e: Entity, slot: SlotDefinition, kind: SlotKind, part: PartType | ''): void {
@@ -393,6 +684,7 @@ export function initArena(): void {
 export function initScene(getPart: () => PartType): void {
   getSelectedPartFn = getPart
   prewarmPools()
+  if (CINEMATIC_ANIM_ENABLED) prewarmCinematicPools()
 
   ux.on('wrongPart', (data: any) => {
     if (!data) return
@@ -461,15 +753,23 @@ function verifyPlaced(e: Entity | undefined, slot: SlotDefinition, kind: string,
 function runIntegrityCheck(slots: SlotDefinition[], mask: number, phase: RoundPhase): number {
   let issues = 0
   const buildable = phase === 'BUILD'
-  const showSolids = phase === 'BUILD' || phase === 'BUILD_COMPLETE'
+  const showSolids =
+    phase === 'BUILD' ||
+    phase === 'BUILD_COMPLETE' ||
+    phase === 'COUNTDOWN' ||
+    phase === 'PERFORM' ||
+    phase === 'RESET'
 
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i]
     const occupied = ((mask >> i) & 1) === 1
     const refs = slotRefs[slot.slotId]
     if (occupied && showSolids) {
-      issues += verifyPlaced(refs?.solid, slot, 'solid', 1)
-      issues += verifyPlaced(refs?.collider, slot, 'collider', 1)
+      // During animation solid+collider are at non-base positions — skip transform checks.
+      if (!cinematicAnimating) {
+        issues += verifyPlaced(refs?.solid, slot, 'solid', 1)
+        issues += verifyPlaced(refs?.collider, slot, 'collider', 1)
+      }
     } else if (!occupied && buildable) {
       issues += verifyPlaced(refs?.ghost, slot, 'ghost', 1.18)
       issues += verifyPlaced(refs?.hitbox, slot, 'hitbox', 1)
@@ -589,12 +889,21 @@ export function reconcileScene(): void {
   lastBoardPhase = phase
 
   const buildable = phase === 'BUILD'
-  const showSolids = phase === 'BUILD' || phase === 'BUILD_COMPLETE'
+  const showSolids =
+    phase === 'BUILD' ||
+    phase === 'BUILD_COMPLETE' ||
+    phase === 'COUNTDOWN' ||
+    phase === 'PERFORM' ||
+    phase === 'RESET'
 
-  // On transition into a non-visual phase, declaratively remove all slot
-  // entities. Per-slot removeSlotSolid/removeSlotAffordance depend on slotRefs
-  // being fully populated, which is not guaranteed for late joiners whose initial
-  // state came from a CRDT snapshot rather than incremental attach events.
+  // Solids are being animated by cinematicAnimSystem during COUNTDOWN/PERFORM —
+  // suppress integrity position checks so the checker doesn't flag intentional motion.
+  cinematicAnimating = CINEMATIC_ANIM_ENABLED &&
+    (phase === 'COUNTDOWN' || phase === 'PERFORM' || phase === 'RESET')
+
+  // On transition into a phase without physical build visuals, declaratively
+  // remove all slot entities. Cinematic phases keep solids/colliders alive so a
+  // player standing on the finished template does not lose the floor mid-shot.
   if (phaseRebuild && !showSolids) {
     clearAllSlotVisuals(`transition-to=${phase}`)
   }
@@ -627,7 +936,7 @@ export function reconcileScene(): void {
   const now = Date.now()
   if (now - healthAuditAtMs >= HEALTH_AUDIT_INTERVAL_MS) {
     healthAuditAtMs = now
-    if (phase === 'BUILD' || phase === 'BUILD_COMPLETE') {
+    if (showSolids) {
       runHealthAudit(slots, mask, phase)
     }
     const issues = runIntegrityCheck(slots, mask, phase) + logStrayPartMeshes()
