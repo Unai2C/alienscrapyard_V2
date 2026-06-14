@@ -288,8 +288,8 @@ function releaseEntity(e: Entity | undefined): void {
 // then burst into particles. We animate the ORIGINAL solid and collider entities
 // from slotRefs directly — no separate clone pool — so the structure is
 // physically walkable throughout the animation and entity count stays minimal.
-const PARTICLES_PER_BLOCK = 6
-const MAX_PARTICLES = 60
+const PARTICLES_PER_BLOCK = 10
+const MAX_PARTICLES = 100
 
 // Each block's last animated position during PERFORM, so the explosion fires
 // from where the blocks actually were when the cutscene ended.
@@ -430,7 +430,7 @@ function updateExplosionParticles(dt: number): void {
       tr.position.x += p.vx * dt
       tr.position.y += p.vy * dt
       tr.position.z += p.vz * dt
-      const sc = t < 0.12 ? (t / 0.12) * 0.38 : 0.38 * (1 - (t - 0.12) / 0.88)
+      const sc = t < 0.12 ? (t / 0.12) * 0.70 : 0.70 * (1 - (t - 0.12) / 0.88)
       tr.scale = Vector3.create(Math.max(0, sc), Math.max(0, sc), Math.max(0, sc))
     } catch (_) {}
   }
@@ -461,7 +461,7 @@ function resetAnimatedSolids(snap: ClientSnapshot): void {
       try {
         const tc = Transform.getMutable(refs.collider)
         tc.position = basePos
-        tc.scale    = baseScale
+        tc.scale    = Vector3.scale(baseScale, 2.0)
       } catch (_) {}
     }
   }
@@ -493,6 +493,7 @@ let choreVariant = 0
 let choreRound = 0
 let choreActive = false
 let choreExploded = false
+let failExploded = false
 
 export function cinematicAnimSystem(dt: number): void {
   const snap  = getClientSnapshot()
@@ -519,6 +520,7 @@ export function cinematicAnimSystem(dt: number): void {
 
     if (phase === 'COUNTDOWN') {
       choreExploded = false
+      failExploded = false
       if (snap.performanceType === 'PERFECT') {
         choreTime = 0
         choreVariant = Math.floor(Math.random() * 2)
@@ -535,11 +537,29 @@ export function cinematicAnimSystem(dt: number): void {
     choreRound = round
   }
 
-  // Explosion fires when the big countdown hits 1 — RESET phase, secondsLeft === 1.
+  // PERFECT explosion — fires from animated block positions when secondsLeft reaches 1.
   if (choreActive && phase === 'RESET' && !choreExploded && snap.secondsLeft <= 1) {
     choreExploded = true
     choreActive = false
     triggerExplosion()
+    hideAnimatedSolids(snap)
+    movePlayerTo({
+      newRelativePosition: RESPAWN_POSITIONS[Math.floor(Math.random() * RESPAWN_POSITIONS.length)],
+      cameraTarget: RESPAWN_LOOK_TARGET
+    }).catch(() => {})
+  }
+
+  // FAIL explosion — no animation but burst + teleport so the player doesn't fall into the void.
+  if (!choreActive && !choreExploded && !failExploded && phase === 'RESET' && snap.secondsLeft <= 1) {
+    failExploded = true
+    const failSlots = getTemplate(snap.templateId)
+    if (failSlots) {
+      const mask = snap.occupiedMask | 0
+      for (let fi = 0; fi < failSlots.length; fi++) {
+        if (((mask >> fi) & 1) === 0) continue
+        spawnParticlesAt(slotPositionVector(failSlots[fi]))
+      }
+    }
     hideAnimatedSolids(snap)
     movePlayerTo({
       newRelativePosition: RESPAWN_POSITIONS[Math.floor(Math.random() * RESPAWN_POSITIONS.length)],
@@ -600,11 +620,17 @@ export function cinematicAnimSystem(dt: number): void {
       t.rotation = Quaternion.multiply(Quaternion.fromEulerDegrees(0, spinDeg, 0), baseRot)
     } catch (_) {}
 
-    // Collider follows the solid's position so the block remains physically
-    // walkable. Keep base scale/rotation on the physics box to avoid jitter.
+    // Collider follows position and scale of the animated solid (no rotation —
+    // rotating box colliders cause physics jitter in DCL).
     if (refs.collider !== undefined) {
       try {
-        Transform.getMutable(refs.collider).position = animPos
+        const tc = Transform.getMutable(refs.collider)
+        tc.position = animPos
+        tc.scale = Vector3.create(
+          baseScale.x * scaleMod * 2.0,
+          baseScale.y * scaleMod * 2.0,
+          baseScale.z * scaleMod * 2.0
+        )
       } catch (_) {}
     }
   }
@@ -663,7 +689,8 @@ function placeHitbox(slot: SlotDefinition): Entity {
   const e = acquireEntity('hitbox', '')
   const t = Transform.getMutable(e)
   t.position = slotPositionVector(slot)
-  t.scale = slotScaleVector(slot)
+  // MeshCollider is 1m native; GLBs are 2m native — 2× to match visual extent.
+  t.scale = Vector3.scale(slotScaleVector(slot), 2.0)
   t.rotation = partRotation(slot.requiredPart)
   pointerEventsSystem.onPointerDown(
     {
@@ -691,7 +718,8 @@ function placeSolid(slot: SlotDefinition): { solid: Entity; collider: Entity } {
   const collider = acquireEntity('collider', '')
   t = Transform.getMutable(collider)
   t.position = slotPositionVector(slot)
-  t.scale = slotScaleVector(slot)
+  // MeshCollider is 1m native; GLBs are 2m native — 2× to match visual extent.
+  t.scale = Vector3.scale(slotScaleVector(slot), 2.0)
   t.rotation = partRotation(slot.requiredPart)
   tagVisual(collider, slot, 'collider', '')
   return { solid, collider }
@@ -866,11 +894,11 @@ function runIntegrityCheck(slots: SlotDefinition[], mask: number, phase: RoundPh
       // During animation solid+collider are at non-base positions — skip transform checks.
       if (!cinematicAnimating) {
         issues += verifyPlaced(refs?.solid, slot, 'solid', 1)
-        issues += verifyPlaced(refs?.collider, slot, 'collider', 1)
+        issues += verifyPlaced(refs?.collider, slot, 'collider', 2.0)
       }
     } else if (!occupied && buildable) {
       issues += verifyPlaced(refs?.ghost, slot, 'ghost', 2.0)
-      issues += verifyPlaced(refs?.hitbox, slot, 'hitbox', 1)
+      issues += verifyPlaced(refs?.hitbox, slot, 'hitbox', 2.0)
     }
   }
 

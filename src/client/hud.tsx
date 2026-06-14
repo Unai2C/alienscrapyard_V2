@@ -42,6 +42,7 @@ export function showFeedback(text: string): void {
 
 export function onWrongPart(required: PartType): void {
   showFeedback(`Wrong piece — need ${PART_LABEL[required]}`)
+  playWrong()
 }
 
 export function dismissOnboarding(): void {
@@ -74,8 +75,10 @@ function cinematicSecondsLeft(phase: RoundPhase, secondsLeftInPhase: number): nu
 const SFX_VOICES = 6
 const successVoices: Entity[] = []
 const pressVoices: Entity[] = []
+const wrongVoices: Entity[] = []
 let successCursor = 0
 let pressCursor = 0
+let wrongCursor = 0
 
 function createVoiceEntity(): Entity {
   const e = engine.addEntity()
@@ -95,6 +98,10 @@ export function playSuccess(): void {
   successCursor = playVoice(successVoices, successCursor, 'assets/sounds/success.mp3', 1.0)
 }
 
+export function playWrong(): void {
+  wrongCursor = playVoice(wrongVoices, wrongCursor, 'assets/sounds/wrong.mp3', 1.0)
+}
+
 function playPress(): void {
   pressCursor = playVoice(pressVoices, pressCursor, 'assets/sounds/pressE.mp3', 1.0)
 }
@@ -104,6 +111,7 @@ function initAudio(): void {
   for (let i = 0; i < SFX_VOICES; i++) {
     successVoices.push(createVoiceEntity())
     pressVoices.push(createVoiceEntity())
+    wrongVoices.push(createVoiceEntity())
   }
   ambientEntity = engine.addEntity()
   Transform.create(ambientEntity, { position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 1, SCENE_CENTER.z) })
@@ -165,11 +173,15 @@ export function hudInputSystem(_dt: number): void {
 
 //  Per-frame ticks
 let lastHudPhase: RoundPhase = 'IDLE'
+let blueFlashAlpha = 0
+let blueFlashFired = false
 
 export function hudTickSystem(dt: number): void {
   // Feedback messages are BUILD-phase interaction hints; drop them on any
   // phase change so they never overlap the cinematic letterbox.
-  const phase = getClientSnapshot().phase
+  const snap = getClientSnapshot()
+  const phase = snap.phase
+  const prevPhase = lastHudPhase  // save BEFORE updating, needed for transition checks
   if (phase !== lastHudPhase) {
     lastHudPhase = phase
     feedbackText = ''
@@ -184,6 +196,23 @@ export function hudTickSystem(dt: number): void {
     onboardingAlpha = Math.max(0, onboardingAlpha - dt * 1.8)
     if (onboardingAlpha <= 0) showOnboarding = false
   }
+
+  // Cyan system-failure flash: instant burst at the explosion, re-triggers at the
+  // BUILD transition to cover the cinematic→first-person camera switch.
+  if (phase === 'COUNTDOWN' && prevPhase !== 'COUNTDOWN') {
+    blueFlashFired = false  // reset each round so the flash fires every cinematic
+  }
+  if (!blueFlashFired && phase === 'RESET' && snap.secondsLeft <= 1) {
+    blueFlashFired = true
+    blueFlashAlpha = 1.0
+  }
+  if (phase === 'BUILD' && prevPhase !== 'BUILD') {
+    blueFlashAlpha = 1.0  // re-fire to cover camera switch back to first-person
+  }
+  if (blueFlashAlpha > 0) {
+    blueFlashAlpha = Math.max(0, blueFlashAlpha - dt * 16) // ~62ms each burst
+  }
+
   floatTime += dt
   const shoulderY = 1.5 + Math.sin(floatTime * 2.5) * 0.06
   for (const e of shoulderEntities) {
@@ -519,6 +548,17 @@ export function initHUD(): void {
           </UiEntity>
 
         </UiEntity>
+
+        {/* System-failure cyan flash — outside cinematic container so it always renders */}
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { top: 0, left: 0 },
+            width: 1920, height: 1080,
+            display: blueFlashAlpha > 0 ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0, g: 1, b: 1, a: blueFlashAlpha } }}
+        />
 
       </UiEntity>
     )
