@@ -137,15 +137,26 @@ const RAW_TEMPLATES: Record<TemplateId, SlotDefinition[]> = {
   ]
 }
 
+// Matches the GLB_SCALE reduction (0.52 → 0.39 = ×0.75): compress all position
+// offsets from the template centre by the same ratio so blocks stay touching.
+const LAYOUT_SCALE = 0.75
+
 function centerTemplates(src: Record<TemplateId, SlotDefinition[]>): Record<TemplateId, SlotDefinition[]> {
-  const dx = SCENE_CENTER.x - TEMPLATE_SOURCE_CENTER.x
-  const dz = SCENE_CENTER.z - TEMPLATE_SOURCE_CENTER.z
   const out = {} as Record<TemplateId, SlotDefinition[]>
   for (const id of Object.keys(src) as TemplateId[]) {
-    out[id] = src[id].map(s => ({
-      ...s,
-      position: { x: s.position.x + dx, y: s.position.y, z: s.position.z + dz }
-    }))
+    out[id] = src[id].map(s => {
+      const ox = (s.position.x - TEMPLATE_SOURCE_CENTER.x) * LAYOUT_SCALE
+      const oy = (s.position.y - TEMPLATE_BASE_Y)          * LAYOUT_SCALE
+      const oz = (s.position.z - TEMPLATE_SOURCE_CENTER.z) * LAYOUT_SCALE
+      return {
+        ...s,
+        position: {
+          x: SCENE_CENTER.x + ox,
+          y: TEMPLATE_BASE_Y + oy,
+          z: SCENE_CENTER.z + oz
+        }
+      }
+    })
   }
   return out
 }

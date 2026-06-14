@@ -18,9 +18,8 @@ export const STALE_THRESHOLD_MS = 4000
 export const SCENE_CENTER = { x: 16, y: 0, z: 16 }
 export const TEMPLATE_BASE_Y = 6.8
 
-// GLB models are exported at 2-unit native size. 0.52 makes each unit ~1.04m
-// so blocks just touch at 1m spacing.
-export const GLB_SCALE = 0.52
+// GLB models are exported at 2-unit native size. 0.39 = 0.52 × 0.75 (~0.78m per block).
+export const GLB_SCALE = 0.39
 
 //  Parts 
 export type PartType = 'CUBE' | 'CYLINDER' | 'CONE'

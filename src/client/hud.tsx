@@ -17,7 +17,7 @@ let selectedIndex = 0
 // src is never swapped on a live entity, which the Unity renderer fails to
 // reinstantiate (the same churn that broke slot visuals).
 const shoulderEntities: Entity[] = []
-const SHOULDER_SCALE = 0.286
+const SHOULDER_SCALE = 0.272
 let carriedVisible = true
 let cinematicCameraActive = false
 let feedbackText = ''

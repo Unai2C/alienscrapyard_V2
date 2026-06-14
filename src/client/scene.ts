@@ -94,7 +94,7 @@ const TROPHY_ORBIT_RADII = [5.5, 4.0, 7.0, 3.0, 8.5]
 const TROPHY_BOB_AMP     = 0.35                     // metres
 const TROPHY_BOB_SPD     = 0.9                      // rad/s
 const TROPHY_SPIN_RAD    = 55 * (Math.PI / 180)     // rad/s
-const TROPHY_SCALE       = 0.5                      // miniature scale factor
+const TROPHY_SCALE       = 0.375                    // miniature scale factor (0.5 × 0.75)
 const TROPHY_LABEL_Y_OFF = 2.0                      // metres above orbit centre
 
 interface TrophyBlock {
@@ -652,7 +652,8 @@ function placeGhost(slot: SlotDefinition): Entity {
   const e = acquireEntity('ghost', slot.requiredPart)
   const t = Transform.getMutable(e)
   t.position = slotPositionVector(slot)
-  t.scale = Vector3.scale(slotScaleVector(slot), 1.18)
+  // Primitives are 1m native vs 2m for GLBs; 2.0× matches the GLB block size.
+  t.scale = Vector3.scale(slotScaleVector(slot), 2.0)
   t.rotation = partRotation(slot.requiredPart)
   tagVisual(e, slot, 'ghost', slot.requiredPart)
   return e
@@ -868,7 +869,7 @@ function runIntegrityCheck(slots: SlotDefinition[], mask: number, phase: RoundPh
         issues += verifyPlaced(refs?.collider, slot, 'collider', 1)
       }
     } else if (!occupied && buildable) {
-      issues += verifyPlaced(refs?.ghost, slot, 'ghost', 1.18)
+      issues += verifyPlaced(refs?.ghost, slot, 'ghost', 2.0)
       issues += verifyPlaced(refs?.hitbox, slot, 'hitbox', 1)
     }
   }
