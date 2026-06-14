@@ -88,8 +88,9 @@ const RESPAWN_LOOK_TARGET = Vector3.create(SCENE_CENTER.x, TEMPLATE_BASE_Y + 2, 
 //  Trophy system
 const MAX_TROPHIES       = 5
 const TROPHY_BASE_Y      = TEMPLATE_BASE_Y + 3.5   // orbit centre height
-const TROPHY_ORBIT_R     = 5.5                      // metres from scene centre
 const TROPHY_ORBIT_SPD   = 0.22                     // rad/s
+// Five distinct radii so trophies never overlap
+const TROPHY_ORBIT_RADII = [5.5, 4.0, 7.0, 3.0, 8.5]
 const TROPHY_BOB_AMP     = 0.35                     // metres
 const TROPHY_BOB_SPD     = 0.9                      // rad/s
 const TROPHY_SPIN_RAD    = 55 * (Math.PI / 180)     // rad/s
@@ -108,6 +109,7 @@ interface TrophyEntry {
   blocks:      TrophyBlock[]
   label:       Entity
   orbitAngle:  number   // current angle (rad)
+  orbitRadius: number   // unique radius from TROPHY_ORBIT_RADII
   bobPhase:    number   // phase offset for sin bob
   labelOffY:   number   // metres above orbit centre: top of tallest block + margin
 }
@@ -1110,9 +1112,11 @@ function spawnTrophy(snap: ClientSnapshot): void {
   }
   const labelOffY  = topExtent + 1.2   // clearance above tallest block (text anchors at centre, names hang down)
 
-  const startAngle = (trophies.length / MAX_TROPHIES) * Math.PI * 2
+  const slotIndex  = trophies.length % TROPHY_ORBIT_RADII.length
+  const startAngle = slotIndex * (Math.PI * 2 / MAX_TROPHIES)
   const bobPhase   = startAngle
-  trophies.push({ blocks, label, orbitAngle: startAngle, bobPhase, labelOffY })
+  const orbitRadius = TROPHY_ORBIT_RADII[slotIndex]
+  trophies.push({ blocks, label, orbitAngle: startAngle, orbitRadius, bobPhase, labelOffY })
 
   console.log(`[TROPHY] spawned round=${snap.roundNumber} builders="${snap.builders}" blocks=${blocks.length} total=${trophies.length}`)
 }
@@ -1128,8 +1132,8 @@ function updateTrophies(dt: number): void {
   for (const entry of trophies) {
     entry.orbitAngle += TROPHY_ORBIT_SPD * dt
     const bob = Math.sin(trophyTime * TROPHY_BOB_SPD + entry.bobPhase) * TROPHY_BOB_AMP
-    const cx = SCENE_CENTER.x + Math.cos(entry.orbitAngle) * TROPHY_ORBIT_R
-    const cz = SCENE_CENTER.z + Math.sin(entry.orbitAngle) * TROPHY_ORBIT_R
+    const cx = SCENE_CENTER.x + Math.cos(entry.orbitAngle) * entry.orbitRadius
+    const cz = SCENE_CENTER.z + Math.sin(entry.orbitAngle) * entry.orbitRadius
     const cy = TROPHY_BASE_Y + bob
 
     for (const b of entry.blocks) {

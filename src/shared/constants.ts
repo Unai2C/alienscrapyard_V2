@@ -46,7 +46,7 @@ export const PART_LABEL: Record<PartType, string> = {
 
 export const PART_SYMBOL: Record<PartType, string> = {
   CUBE:     '■',
-  CYLINDER: '●',
+  CYLINDER: '◊',
   CONE:     '▲'
 }
 

@@ -326,24 +326,13 @@ export function initHUD(): void {
                       : { r: 0.02, g: 0.02, b: 0.1, a: 0.8 }
                     }}
                   >
-                    {pt === 'CYLINDER' ? (
-                      <UiEntity
-                        uiTransform={{ width: 34, height: 34 }}
-                        uiBackground={{
-                          texture: { src: 'assets/images/octagon.png' },
-                          textureMode: 'stretch',
-                          color: tint
-                        }}
-                      />
-                    ) : (
-                      <Label
-                        value={PART_SYMBOL[pt]}
-                        fontSize={28}
-                        color={tint}
-                        uiTransform={{ width: '100%', height: '100%' }}
-                        textAlign='middle-center'
-                      />
-                    )}
+                    <Label
+                      value={PART_SYMBOL[pt]}
+                      fontSize={pt === 'CYLINDER' ? 32 : 28}
+                      color={tint}
+                      uiTransform={{ width: '100%', height: '100%' }}
+                      textAlign='middle-center'
+                    />
                   </UiEntity>
                 )
               })}
@@ -405,6 +394,37 @@ export function initHUD(): void {
               textAlign='middle-center'
             />
             <Label value=' ' fontSize={6} color={{ r: 0, g: 0, b: 0, a: 0 }} uiTransform={{ width: '100%', height: 10 }} textAlign='middle-center' />
+        </UiEntity>
+
+        {/* PERFECT / FAIL overlay — centrado grande durante BUILD_COMPLETE */}
+        <UiEntity
+          uiTransform={{
+            positionType: 'absolute',
+            position: { top: 360, left: 320 },
+            width: 1280, height: 220,
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            display: phase === 'BUILD_COMPLETE' && snap.resolved && !snap.isStale ? 'flex' : 'none'
+          }}
+          uiBackground={{ color: { r: 0, g: 0, b: 0, a: 0.72 } }}
+        >
+          <Label
+            value={snap.performanceType === 'PERFECT' ? 'PERFECT BUILD!' : 'INCOMPLETE'}
+            fontSize={80}
+            color={snap.performanceType === 'PERFECT'
+              ? { r: 0, g: 1, b: 1, a: 1 }
+              : { r: 1, g: 0.25, b: 0.15, a: 1 }}
+            uiTransform={{ width: '100%', height: 160 }}
+            textAlign='middle-center'
+          />
+          <Label
+            value={snap.performanceType === 'PERFECT' ? `${snap.partsAttached} / ${snap.partsRequired} pieces placed` : `${snap.partsAttached} / ${snap.partsRequired} pieces placed`}
+            fontSize={22}
+            color={{ r: 0.8, g: 0.8, b: 0.9, a: 0.85 }}
+            uiTransform={{ width: '100%', height: 40 }}
+            textAlign='middle-center'
+          />
         </UiEntity>
 
         {/* Cinematic letterbox + countdown + effects */}
