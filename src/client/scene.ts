@@ -119,6 +119,7 @@ const trophyLabelPool: Entity[] = []
 const trophies: TrophyEntry[] = []
 let trophyTime = 0
 let lastTrophyRound = -1
+let trophySlotCursor = 0  // monotonic — never reset, so each new trophy takes the next slot in sequence
 
 //  Materials
 const PART_GLOW_COLOR: Record<PartType, Color4> = {
@@ -1143,7 +1144,8 @@ function spawnTrophy(snap: ClientSnapshot): void {
   }
   const labelOffY  = topExtent + 1.2   // clearance above tallest block (text anchors at centre, names hang down)
 
-  const slotIndex  = trophies.length % TROPHY_ORBIT_RADII.length
+  const slotIndex  = trophySlotCursor % TROPHY_ORBIT_RADII.length
+  trophySlotCursor++
   const startAngle = slotIndex * (Math.PI * 2 / MAX_TROPHIES)
   const bobPhase   = startAngle
   const orbitRadius = TROPHY_ORBIT_RADII[slotIndex]
