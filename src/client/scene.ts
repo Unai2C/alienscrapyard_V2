@@ -549,22 +549,24 @@ export function cinematicAnimSystem(dt: number): void {
     }).catch(() => {})
   }
 
-  // FAIL explosion — no animation but burst + teleport so the player doesn't fall into the void.
+  // FAIL explosion — only when at least one block was placed; if nothing was built, skip.
   if (!choreActive && !choreExploded && !failExploded && phase === 'RESET' && snap.secondsLeft <= 1) {
     failExploded = true
-    const failSlots = getTemplate(snap.templateId)
-    if (failSlots) {
-      const mask = snap.occupiedMask | 0
-      for (let fi = 0; fi < failSlots.length; fi++) {
-        if (((mask >> fi) & 1) === 0) continue
-        spawnParticlesAt(slotPositionVector(failSlots[fi]))
+    if ((snap.occupiedMask | 0) !== 0) {
+      const failSlots = getTemplate(snap.templateId)
+      if (failSlots) {
+        const mask = snap.occupiedMask | 0
+        for (let fi = 0; fi < failSlots.length; fi++) {
+          if (((mask >> fi) & 1) === 0) continue
+          spawnParticlesAt(slotPositionVector(failSlots[fi]))
+        }
       }
+      hideAnimatedSolids(snap)
+      movePlayerTo({
+        newRelativePosition: RESPAWN_POSITIONS[Math.floor(Math.random() * RESPAWN_POSITIONS.length)],
+        cameraTarget: RESPAWN_LOOK_TARGET
+      }).catch(() => {})
     }
-    hideAnimatedSolids(snap)
-    movePlayerTo({
-      newRelativePosition: RESPAWN_POSITIONS[Math.floor(Math.random() * RESPAWN_POSITIONS.length)],
-      cameraTarget: RESPAWN_LOOK_TARGET
-    }).catch(() => {})
   }
 
   if (explosionParticles.length > 0) updateExplosionParticles(dt)
@@ -1186,6 +1188,38 @@ function updateTrophies(dt: number): void {
 
 export function trophySystem(dt: number): void {
   if (trophies.length > 0) updateTrophies(dt)
+}
+
+//  Boundary guard
+// During the cinematic the virtual camera takes over and the player's avatar
+// keeps responding to movement input. If the player walks to the scene edge
+// they get ejected into the void. This system teleports them back to the
+// platform whenever they stray within BOUNDARY_MARGIN metres of any edge.
+const SCENE_EDGE    = 32   // scene is 2×2 parcels = 32m × 32m
+const BOUNDARY_MARGIN = 2  // trigger zone width at each edge
+
+let boundaryCooldown = 0
+
+export function boundaryGuardSystem(dt: number): void {
+  const phase = getClientSnapshot().phase
+  if (phase !== 'COUNTDOWN' && phase !== 'PERFORM' && phase !== 'RESET') return
+
+  if (boundaryCooldown > 0) { boundaryCooldown -= dt; return }
+
+  try {
+    const pos = Transform.get(engine.PlayerEntity).position
+    if (
+      pos.x < BOUNDARY_MARGIN || pos.x > SCENE_EDGE - BOUNDARY_MARGIN ||
+      pos.z < BOUNDARY_MARGIN || pos.z > SCENE_EDGE - BOUNDARY_MARGIN
+    ) {
+      boundaryCooldown = 3
+      movePlayerTo({
+        newRelativePosition: RESPAWN_POSITIONS[Math.floor(Math.random() * RESPAWN_POSITIONS.length)],
+        cameraTarget: RESPAWN_LOOK_TARGET
+      }).catch(() => {})
+      console.log(`[BOUNDARY] player ejected at (${pos.x.toFixed(1)},${pos.z.toFixed(1)}) during ${phase}`)
+    }
+  } catch (_) {}
 }
 
 //  Click handler
