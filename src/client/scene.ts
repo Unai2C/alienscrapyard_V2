@@ -86,7 +86,9 @@ const RESPAWN_POSITIONS = [
 const RESPAWN_LOOK_TARGET = Vector3.create(SCENE_CENTER.x, TEMPLATE_BASE_Y + 2, SCENE_CENTER.z)
 
 //  Trophy system
-const MAX_TROPHIES       = 5
+// 3 (was 5): each trophy prewarns up to 21 hidden GLB instances at init —
+// the instantiation spike was heavy enough to matter on mobile explorers.
+const MAX_TROPHIES       = 3
 const TROPHY_BASE_Y      = TEMPLATE_BASE_Y + 3.5   // orbit centre height
 const TROPHY_ORBIT_SPD   = 0.22                     // rad/s
 // Five distinct radii so trophies never overlap

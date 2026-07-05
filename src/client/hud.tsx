@@ -1,6 +1,6 @@
 import {
   engine, Entity, Transform, GltfContainer, AudioSource,
-  InputAction, inputSystem, PointerEventType
+  InputAction, inputSystem, PointerEventType, UiCanvasInformation
 } from '@dcl/sdk/ecs'
 import { Vector3, Quaternion } from '@dcl/sdk/math'
 import { ReactEcsRenderer, UiEntity, Label, ReactEcs } from '@dcl/sdk/react-ecs'
@@ -72,7 +72,7 @@ function cinematicSecondsLeft(phase: RoundPhase, secondsLeftInPhase: number): nu
 // the same entity just restart the sound — you never hear both. Cycling
 // through N voices lets back-to-back plays overlap. All voices are created
 // once at init; gameplay only retriggers them (zero entity churn).
-const SFX_VOICES = 6
+const SFX_VOICES = 3
 const successVoices: Entity[] = []
 const pressVoices: Entity[] = []
 const wrongVoices: Entity[] = []
@@ -258,15 +258,34 @@ export function initHUD(): void {
       ? 'Syncing with server...'
       : phaseLabel(phase, snap)
 
+    // Real canvas size, in UI logical pixels. Every element is laid out
+    // against these values each frame, so the HUD tracks resolution and
+    // window-size changes live — fixed 1920×1080 coordinates put the bottom
+    // letterbox bar mid-screen on any non-16:9 display.
+    const canvas = UiCanvasInformation.getOrNull(engine.RootEntity)
+    const dpr = canvas?.devicePixelRatio || 1
+    const sw = canvas && canvas.width > 0 ? canvas.width / dpr : 1920
+    const sh = canvas && canvas.height > 0 ? canvas.height / dpr : 1080
+    // Uniform scale for element sizes; fonts get a floor so text stays
+    // readable on small (mobile) screens.
+    const s = Math.min(sw / 1920, sh / 1080)
+    const fscale = Math.max(s, 0.62)
+    const px = (n: number) => Math.round(n * s)
+    const fpx = (n: number) => Math.round(n * fscale)
+    const cx = (w: number) => Math.round((sw - w) / 2)
+    // Letterbox bars: ~13% of the real screen height, top and bottom.
+    const barH = Math.round(sh * 0.13)
+    const innerH = sh - barH * 2
+
     return (
-      <UiEntity uiTransform={{ width: 1920, height: 1080, positionType: 'absolute', position: { top: 0, left: 0 } }}>
+      <UiEntity uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', position: { top: 0, left: 0 } }}>
 
         {/* Top bar — phase / timer / syncing */}
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: 12, left: 480 },
-            width: 960, height: 38,
+            position: { top: px(12), left: cx(px(960)) },
+            width: px(960), height: px(38),
             alignItems: 'center',
             justifyContent: 'center'
           }}
@@ -278,7 +297,7 @@ export function initHUD(): void {
         >
           <Label
             value={label}
-            fontSize={isUrgent ? 18 : 15}
+            fontSize={isUrgent ? fpx(18) : fpx(15)}
             color={{
               r: 1,
               g: isUrgent ? 0.3 : (syncing ? 0.8 : 1),
@@ -296,22 +315,22 @@ export function initHUD(): void {
 
         {/* Progress bar */}
         <UiEntity
-          uiTransform={{ positionType: 'absolute', position: { top: 60, left: 576 }, width: 768, height: 14, display: inBuild ? 'flex' : 'none' }}
+          uiTransform={{ positionType: 'absolute', position: { top: px(60), left: cx(px(768)) }, width: px(768), height: px(14), display: inBuild ? 'flex' : 'none' }}
           uiBackground={{ color: { r: 0.1, g: 0.1, b: 0.1, a: 0.7 } }}
         >
           <UiEntity
-            uiTransform={{ width: `${pct}%`, height: 14 }}
+            uiTransform={{ width: `${pct}%`, height: px(14) }}
             uiBackground={{ color: { r: 0.15, g: 0.75, b: 0.3, a: 1 } }}
           />
         </UiEntity>
 
         {/* Progress label */}
         <UiEntity
-          uiTransform={{ positionType: 'absolute', position: { top: 78, left: 576 }, width: 768, height: 20, alignItems: 'center', justifyContent: 'center', display: inBuild ? 'flex' : 'none' }}
+          uiTransform={{ positionType: 'absolute', position: { top: px(78), left: cx(px(768)) }, width: px(768), height: px(20), alignItems: 'center', justifyContent: 'center', display: inBuild ? 'flex' : 'none' }}
         >
           <Label
             value={`${snap.partsAttached} / ${snap.partsRequired}`}
-            fontSize={12}
+            fontSize={fpx(12)}
             color={{ r: 0.85, g: 0.85, b: 1, a: 1 }}
             uiTransform={{ width: '100%', height: '100%' }}
             textAlign='middle-center'
@@ -322,8 +341,8 @@ export function initHUD(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: 110, left: 740 },
-            width: 440, height: 104,
+            position: { top: px(110), left: cx(px(440)) },
+            width: px(440), height: px(104),
             flexDirection: 'column',
             alignItems: 'center',
             display: inBuild ? 'flex' : 'none'
@@ -332,13 +351,13 @@ export function initHUD(): void {
         >
             <Label
               value='CURRENT BLOCK'
-              fontSize={10}
+              fontSize={fpx(10)}
               color={{ r: 0.5, g: 0.5, b: 0.9, a: 0.9 }}
-              uiTransform={{ width: '100%', height: 20 }}
+              uiTransform={{ width: '100%', height: px(20) }}
               textAlign='middle-center'
             />
             <UiEntity
-              uiTransform={{ width: '100%', height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' }}
+              uiTransform={{ width: '100%', height: px(56), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' }}
             >
               {PART_TYPES.map(pt => {
                 const isSelected = pt === PART_TYPES[selectedIndex]
@@ -349,7 +368,7 @@ export function initHUD(): void {
                 return (
                   <UiEntity
                     key={pt}
-                    uiTransform={{ width: 60, height: 48, alignItems: 'center', justifyContent: 'center' }}
+                    uiTransform={{ width: px(60), height: px(48), alignItems: 'center', justifyContent: 'center' }}
                     uiBackground={{ color: isSelected
                       ? { r: 0.12, g: 0.12, b: 0.45, a: 1 }
                       : { r: 0.02, g: 0.02, b: 0.1, a: 0.8 }
@@ -357,7 +376,7 @@ export function initHUD(): void {
                   >
                     <Label
                       value={PART_SYMBOL[pt]}
-                      fontSize={pt === 'CYLINDER' ? 32 : 28}
+                      fontSize={pt === 'CYLINDER' ? fpx(32) : fpx(28)}
                       color={tint}
                       uiTransform={{ width: '100%', height: '100%' }}
                       textAlign='middle-center'
@@ -368,21 +387,21 @@ export function initHUD(): void {
             </UiEntity>
             <Label
               value='Press <color=#00ffff><size=14>E</size></color> to change block'
-              fontSize={9}
+              fontSize={fpx(9)}
               color={{ r: 0.6, g: 0.6, b: 0.8, a: 0.85 }}
-              uiTransform={{ width: '100%', height: 18 }}
+              uiTransform={{ width: '100%', height: px(18) }}
               textAlign='middle-center'
             />
         </UiEntity>
 
-        {/* Feedback — bottom bar */}
+        {/* Feedback — bottom bar (anchored to the real bottom edge) */}
         <UiEntity
-          uiTransform={{ positionType: 'absolute', position: { top: 1020, left: 480 }, width: 960, height: 38, alignItems: 'center', justifyContent: 'center', display: feedbackText !== '' ? 'flex' : 'none' }}
+          uiTransform={{ positionType: 'absolute', position: { top: sh - px(60), left: cx(px(960)) }, width: px(960), height: px(38), alignItems: 'center', justifyContent: 'center', display: feedbackText !== '' ? 'flex' : 'none' }}
           uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
         >
           <Label
             value={feedbackText}
-            fontSize={14}
+            fontSize={fpx(14)}
             color={{ r: 1, g: 1, b: 1, a: 1 }}
             uiTransform={{ width: '100%', height: '100%' }}
             textAlign='middle-center'
@@ -393,8 +412,8 @@ export function initHUD(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: 280, left: 480 },
-            width: 960,
+            position: { top: Math.round(sh * 0.26), left: cx(px(960)) },
+            width: px(960),
             flexDirection: 'column',
             alignItems: 'center',
             display: showOnboarding && !inCinematic && !syncing ? 'flex' : 'none'
@@ -403,34 +422,34 @@ export function initHUD(): void {
         >
             <Label
               value='ALIENSCRAPYARD'
-              fontSize={42}
+              fontSize={fpx(42)}
               color={{ r: 0, g: 1, b: 1, a: onboardingAlpha }}
-              uiTransform={{ width: '100%', height: 60 }}
+              uiTransform={{ width: '100%', height: px(60) }}
               textAlign='middle-center'
             />
             <Label
               value='Place the matching pieces before the timer runs out.'
-              fontSize={20}
+              fontSize={fpx(20)}
               color={{ r: 0.9, g: 0.9, b: 1, a: onboardingAlpha }}
-              uiTransform={{ width: '100%', height: 32 }}
+              uiTransform={{ width: '100%', height: px(32) }}
               textAlign='middle-center'
             />
             <Label
               value='Press <color=#00ffff><size=22>E</size></color> to change piece. Click a slot to place.'
-              fontSize={16}
+              fontSize={fpx(16)}
               color={{ r: 0.9, g: 0.9, b: 1, a: onboardingAlpha }}
-              uiTransform={{ width: '100%', height: 28 }}
+              uiTransform={{ width: '100%', height: px(28) }}
               textAlign='middle-center'
             />
-            <Label value=' ' fontSize={6} color={{ r: 0, g: 0, b: 0, a: 0 }} uiTransform={{ width: '100%', height: 10 }} textAlign='middle-center' />
+            <Label value=' ' fontSize={6} color={{ r: 0, g: 0, b: 0, a: 0 }} uiTransform={{ width: '100%', height: px(10) }} textAlign='middle-center' />
         </UiEntity>
 
         {/* PERFECT / FAIL overlay — centrado grande durante BUILD_COMPLETE */}
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: 360, left: 320 },
-            width: 1280, height: 220,
+            position: { top: Math.round((sh - px(220)) / 2), left: cx(px(1280)) },
+            width: px(1280), height: px(220),
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
@@ -440,18 +459,18 @@ export function initHUD(): void {
         >
           <Label
             value={snap.performanceType === 'PERFECT' ? 'PERFECT BUILD!' : 'INCOMPLETE'}
-            fontSize={80}
+            fontSize={fpx(80)}
             color={snap.performanceType === 'PERFECT'
               ? { r: 0, g: 1, b: 1, a: 1 }
               : { r: 1, g: 0.25, b: 0.15, a: 1 }}
-            uiTransform={{ width: '100%', height: 160 }}
+            uiTransform={{ width: '100%', height: px(160) }}
             textAlign='middle-center'
           />
           <Label
             value={snap.performanceType === 'PERFECT' ? `${snap.partsAttached} / ${snap.partsRequired} pieces placed` : `${snap.partsAttached} / ${snap.partsRequired} pieces placed`}
-            fontSize={22}
+            fontSize={fpx(22)}
             color={{ r: 0.8, g: 0.8, b: 0.9, a: 0.85 }}
-            uiTransform={{ width: '100%', height: 40 }}
+            uiTransform={{ width: '100%', height: px(40) }}
             textAlign='middle-center'
           />
         </UiEntity>
@@ -459,33 +478,33 @@ export function initHUD(): void {
         {/* Cinematic letterbox + countdown + effects */}
         <UiEntity uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: '100%', height: '100%', display: inCinematic ? 'flex' : 'none' }}>
 
-          {/* Top + bottom letterbox bars */}
+          {/* Top + bottom letterbox bars — anchored to the REAL screen edges */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: 1920, height: 140 }}
+            uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: '100%', height: barH }}
             uiBackground={{ color: { r: 0, g: 0, b: 0, a: 1 } }}
           />
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 940, left: 0 }, width: 1920, height: 140 }}
+            uiTransform={{ positionType: 'absolute', position: { top: sh - barH, left: 0 }, width: '100%', height: barH }}
             uiBackground={{ color: { r: 0, g: 0, b: 0, a: 1 } }}
           />
 
           {/* Inner edge glow — top + bottom */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 136, left: 0 }, width: 1920, height: 4 }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH - px(4), left: 0 }, width: '100%', height: px(4) }}
             uiBackground={{ color: { r: 0.3, g: 0.6, b: 1, a: 0.5 + Math.sin(floatTime * 2.2) * 0.3 } }}
           />
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 940, left: 0 }, width: 1920, height: 4 }}
+            uiTransform={{ positionType: 'absolute', position: { top: sh - barH, left: 0 }, width: '100%', height: px(4) }}
             uiBackground={{ color: { r: 0.3, g: 0.6, b: 1, a: 0.5 + Math.sin(floatTime * 2.2 + 1.5) * 0.3 } }}
           />
 
           {/* Left + right accent bars pulsing (offset phase) */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 140, left: 0 }, width: 4, height: 800 }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH, left: 0 }, width: px(4), height: innerH }}
             uiBackground={{ color: { r: 0.3, g: 0.6, b: 1, a: Math.max(0.1, 0.4 + Math.sin(floatTime * 2.5) * 0.4) } }}
           />
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 140, left: 1916 }, width: 4, height: 800 }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH, left: sw - px(4) }, width: px(4), height: innerH }}
             uiBackground={{ color: { r: 0.3, g: 0.6, b: 1, a: Math.max(0.1, 0.4 + Math.sin(floatTime * 2.5 + Math.PI) * 0.4) } }}
           />
 
@@ -493,55 +512,55 @@ export function initHUD(): void {
           <UiEntity
             uiTransform={{
               positionType: 'absolute',
-              position: { top: Math.round(140 + ((Math.sin(floatTime * 0.75) + 1) / 2) * 790), left: 0 },
-              width: 1920, height: 3
+              position: { top: Math.round(barH + ((Math.sin(floatTime * 0.75) + 1) / 2) * (innerH - px(3))), left: 0 },
+              width: '100%', height: px(3)
             }}
             uiBackground={{ color: { r: 0.5, g: 0.8, b: 1, a: 0.45 } }}
           />
 
           {/* "NEXT BUILD IN" label */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 162, left: 0 }, width: 1920, height: 58, alignItems: 'center', justifyContent: 'center' }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH + px(22), left: 0 }, width: '100%', height: px(58), alignItems: 'center', justifyContent: 'center' }}
           >
             <Label
               value='NEXT BUILD IN'
-              fontSize={26}
+              fontSize={fpx(26)}
               color={{ r: 0.75, g: 0.85, b: 1, a: Math.max(0.4, 0.7 + Math.sin(floatTime * 3.5) * 0.3) }}
-              uiTransform={{ width: '100%', height: 58 }}
+              uiTransform={{ width: '100%', height: px(58) }}
               textAlign='middle-center'
             />
           </UiEntity>
 
           {/* Countdown number — warm color cycle */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 210, left: 0 }, width: 1920, height: 200, alignItems: 'center', justifyContent: 'center' }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH + px(70), left: 0 }, width: '100%', height: px(200), alignItems: 'center', justifyContent: 'center' }}
           >
             <Label
               value={`${Math.max(0, cinematicSecondsLeft(phase, snap.secondsLeft))}`}
-              fontSize={160}
+              fontSize={fpx(160)}
               color={{
                 r: Math.min(1, 0.75 + Math.sin(floatTime * 2.0) * 0.25),
                 g: Math.max(0, 0.75 + Math.sin(floatTime * 2.0 + 1.2) * 0.25),
                 b: Math.max(0, 0.1  + Math.sin(floatTime * 2.0 + 2.4) * 0.15),
                 a: 1
               }}
-              uiTransform={{ width: '100%', height: 200 }}
+              uiTransform={{ width: '100%', height: px(200) }}
               textAlign='middle-center'
             />
           </UiEntity>
 
           {/* Depleting progress bar — total cinematic time remaining */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: 428, left: 360 }, width: 1200, height: 5 }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH + px(288), left: cx(px(1200)) }, width: px(1200), height: px(5) }}
             uiBackground={{ color: { r: 0.08, g: 0.08, b: 0.25, a: 0.7 } }}
           >
             <UiEntity
               uiTransform={{
                 width: Math.round(
                   (Math.max(0, cinematicSecondsLeft(phase, snap.secondsLeft)) /
-                  (COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS + RESET_DELAY_SECONDS)) * 1200
+                  (COUNTDOWN_SECONDS + PERFORMANCE_DURATION_SECONDS + RESET_DELAY_SECONDS)) * px(1200)
                 ),
-                height: 5
+                height: px(5)
               }}
               uiBackground={{ color: { r: 0.3, g: 0.65, b: 1, a: 0.85 } }}
             />
@@ -554,7 +573,7 @@ export function initHUD(): void {
           uiTransform={{
             positionType: 'absolute',
             position: { top: 0, left: 0 },
-            width: 1920, height: 1080,
+            width: '100%', height: '100%',
             display: blueFlashAlpha > 0 ? 'flex' : 'none'
           }}
           uiBackground={{ color: { r: 0, g: 1, b: 1, a: blueFlashAlpha } }}
@@ -562,5 +581,5 @@ export function initHUD(): void {
 
       </UiEntity>
     )
-  }, { virtualWidth: 1920, virtualHeight: 1080 })
+  })
 }
