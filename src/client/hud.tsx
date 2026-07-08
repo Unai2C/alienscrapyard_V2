@@ -10,6 +10,7 @@ import {
   COUNTDOWN_SECONDS, PERFORMANCE_DURATION_SECONDS, RESET_DELAY_SECONDS
 } from '../shared/constants'
 import { getClientSnapshot } from './client'
+import { getIsMobile } from './platform'
 
 let selectedIndex = 0
 // One persistent entity per piece type, each with its GLB loaded once at
@@ -267,12 +268,26 @@ export function initHUD(): void {
     const sw = canvas && canvas.width > 0 ? canvas.width / dpr : 1920
     const sh = canvas && canvas.height > 0 ? canvas.height / dpr : 1080
     // Uniform scale for element sizes; fonts get a floor so text stays
-    // readable on small (mobile) screens.
+    // readable on small (mobile) screens. Per the official mobile guide,
+    // touch UIs must be sized up (they suggest ~3× for dense desktop UIs;
+    // ours is already large, 1.6× lands on comparable physical sizes) and
+    // critical UI must live inside the safe area: the system HUD reserves
+    // 30% left, 25% right and 8% top/bottom of the screen for controls.
+    const mob = getIsMobile()
+    const mul = mob ? 1.6 : 1
     const s = Math.min(sw / 1920, sh / 1080)
-    const fscale = Math.max(s, 0.62)
+    const fscale = Math.max(s * mul, 0.62)
     const px = (n: number) => Math.round(n * s)
+    const pxm = (n: number) => Math.round(n * s * mul)
     const fpx = (n: number) => Math.round(n * fscale)
-    const cx = (w: number) => Math.round((sw - w) / 2)
+    // Centered on the safe band (x 0.30–0.75) on mobile, true center on desktop.
+    const cx = (w: number) => Math.round((mob ? sw * 0.525 : sw / 2) - w / 2)
+    // Push the top HUD stack below the reserved top 8% on mobile.
+    const hudTop = mob ? Math.round(sh * 0.08) : 0
+    // Width clamps so scaled-up bars never invade the joystick/buttons zones.
+    const topBarW = mob ? Math.min(pxm(960), Math.round(sw * 0.5)) : px(960)
+    const progW   = mob ? Math.min(pxm(768), Math.round(sw * 0.45)) : px(768)
+    const pickerW = mob ? Math.min(pxm(440), Math.round(sw * 0.45)) : px(440)
     // Letterbox bars: ~13% of the real screen height, top and bottom.
     const barH = Math.round(sh * 0.13)
     const innerH = sh - barH * 2
@@ -284,8 +299,8 @@ export function initHUD(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: px(12), left: cx(px(960)) },
-            width: px(960), height: px(38),
+            position: { top: hudTop + pxm(12), left: cx(topBarW) },
+            width: topBarW, height: pxm(38),
             alignItems: 'center',
             justifyContent: 'center'
           }}
@@ -315,18 +330,18 @@ export function initHUD(): void {
 
         {/* Progress bar */}
         <UiEntity
-          uiTransform={{ positionType: 'absolute', position: { top: px(60), left: cx(px(768)) }, width: px(768), height: px(14), display: inBuild ? 'flex' : 'none' }}
+          uiTransform={{ positionType: 'absolute', position: { top: hudTop + pxm(60), left: cx(progW) }, width: progW, height: pxm(14), display: inBuild ? 'flex' : 'none' }}
           uiBackground={{ color: { r: 0.1, g: 0.1, b: 0.1, a: 0.7 } }}
         >
           <UiEntity
-            uiTransform={{ width: `${pct}%`, height: px(14) }}
+            uiTransform={{ width: `${pct}%`, height: pxm(14) }}
             uiBackground={{ color: { r: 0.15, g: 0.75, b: 0.3, a: 1 } }}
           />
         </UiEntity>
 
         {/* Progress label */}
         <UiEntity
-          uiTransform={{ positionType: 'absolute', position: { top: px(78), left: cx(px(768)) }, width: px(768), height: px(20), alignItems: 'center', justifyContent: 'center', display: inBuild ? 'flex' : 'none' }}
+          uiTransform={{ positionType: 'absolute', position: { top: hudTop + pxm(78), left: cx(progW) }, width: progW, height: pxm(20), alignItems: 'center', justifyContent: 'center', display: inBuild ? 'flex' : 'none' }}
         >
           <Label
             value={`${snap.partsAttached} / ${snap.partsRequired}`}
@@ -341,8 +356,8 @@ export function initHUD(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: px(110), left: cx(px(440)) },
-            width: px(440), height: px(104),
+            position: { top: hudTop + pxm(110), left: cx(pickerW) },
+            width: pickerW, height: pxm(104),
             flexDirection: 'column',
             alignItems: 'center',
             display: inBuild ? 'flex' : 'none'
@@ -353,11 +368,11 @@ export function initHUD(): void {
               value='CURRENT BLOCK'
               fontSize={fpx(10)}
               color={{ r: 0.5, g: 0.5, b: 0.9, a: 0.9 }}
-              uiTransform={{ width: '100%', height: px(20) }}
+              uiTransform={{ width: '100%', height: pxm(20) }}
               textAlign='middle-center'
             />
             <UiEntity
-              uiTransform={{ width: '100%', height: px(56), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' }}
+              uiTransform={{ width: '100%', height: pxm(56), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' }}
             >
               {PART_TYPES.map(pt => {
                 const isSelected = pt === PART_TYPES[selectedIndex]
@@ -368,7 +383,7 @@ export function initHUD(): void {
                 return (
                   <UiEntity
                     key={pt}
-                    uiTransform={{ width: px(60), height: px(48), alignItems: 'center', justifyContent: 'center' }}
+                    uiTransform={{ width: pxm(60), height: pxm(48), alignItems: 'center', justifyContent: 'center' }}
                     uiBackground={{ color: isSelected
                       ? { r: 0.12, g: 0.12, b: 0.45, a: 1 }
                       : { r: 0.02, g: 0.02, b: 0.1, a: 0.8 }
@@ -389,14 +404,14 @@ export function initHUD(): void {
               value='Press <color=#00ffff><size=14>E</size></color> to change block'
               fontSize={fpx(9)}
               color={{ r: 0.6, g: 0.6, b: 0.8, a: 0.85 }}
-              uiTransform={{ width: '100%', height: px(18) }}
+              uiTransform={{ width: '100%', height: pxm(18) }}
               textAlign='middle-center'
             />
         </UiEntity>
 
         {/* Feedback — bottom bar (anchored to the real bottom edge) */}
         <UiEntity
-          uiTransform={{ positionType: 'absolute', position: { top: sh - px(60), left: cx(px(960)) }, width: px(960), height: px(38), alignItems: 'center', justifyContent: 'center', display: feedbackText !== '' ? 'flex' : 'none' }}
+          uiTransform={{ positionType: 'absolute', position: { top: mob ? Math.round(sh * 0.92) - pxm(38) : sh - px(60), left: cx(topBarW) }, width: topBarW, height: pxm(38), alignItems: 'center', justifyContent: 'center', display: feedbackText !== '' ? 'flex' : 'none' }}
           uiBackground={{ color: { r: 0.05, g: 0.05, b: 0.2, a: 0.88 } }}
         >
           <Label
@@ -412,8 +427,8 @@ export function initHUD(): void {
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: Math.round(sh * 0.26), left: cx(px(960)) },
-            width: px(960),
+            position: { top: Math.round(sh * 0.26), left: cx(mob ? Math.round(sw * 0.5) : px(960)) },
+            width: mob ? Math.round(sw * 0.5) : px(960),
             flexDirection: 'column',
             alignItems: 'center',
             display: showOnboarding && !inCinematic && !syncing ? 'flex' : 'none'
@@ -424,32 +439,32 @@ export function initHUD(): void {
               value='ALIENSCRAPYARD'
               fontSize={fpx(42)}
               color={{ r: 0, g: 1, b: 1, a: onboardingAlpha }}
-              uiTransform={{ width: '100%', height: px(60) }}
+              uiTransform={{ width: '100%', height: pxm(60) }}
               textAlign='middle-center'
             />
             <Label
               value='Place the matching pieces before the timer runs out.'
               fontSize={fpx(20)}
               color={{ r: 0.9, g: 0.9, b: 1, a: onboardingAlpha }}
-              uiTransform={{ width: '100%', height: px(32) }}
+              uiTransform={{ width: '100%', height: pxm(32) }}
               textAlign='middle-center'
             />
             <Label
               value='Press <color=#00ffff><size=22>E</size></color> to change piece. Click a slot to place.'
               fontSize={fpx(16)}
               color={{ r: 0.9, g: 0.9, b: 1, a: onboardingAlpha }}
-              uiTransform={{ width: '100%', height: px(28) }}
+              uiTransform={{ width: '100%', height: pxm(28) }}
               textAlign='middle-center'
             />
-            <Label value=' ' fontSize={6} color={{ r: 0, g: 0, b: 0, a: 0 }} uiTransform={{ width: '100%', height: px(10) }} textAlign='middle-center' />
+            <Label value=' ' fontSize={6} color={{ r: 0, g: 0, b: 0, a: 0 }} uiTransform={{ width: '100%', height: pxm(10) }} textAlign='middle-center' />
         </UiEntity>
 
         {/* PERFECT / FAIL overlay — centrado grande durante BUILD_COMPLETE */}
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
-            position: { top: Math.round((sh - px(220)) / 2), left: cx(px(1280)) },
-            width: px(1280), height: px(220),
+            position: { top: Math.round((sh - pxm(220)) / 2), left: cx(mob ? Math.round(sw * 0.6) : px(1280)) },
+            width: mob ? Math.round(sw * 0.6) : px(1280), height: pxm(220),
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
@@ -463,14 +478,14 @@ export function initHUD(): void {
             color={snap.performanceType === 'PERFECT'
               ? { r: 0, g: 1, b: 1, a: 1 }
               : { r: 1, g: 0.25, b: 0.15, a: 1 }}
-            uiTransform={{ width: '100%', height: px(160) }}
+            uiTransform={{ width: '100%', height: pxm(160) }}
             textAlign='middle-center'
           />
           <Label
             value={snap.performanceType === 'PERFECT' ? `${snap.partsAttached} / ${snap.partsRequired} pieces placed` : `${snap.partsAttached} / ${snap.partsRequired} pieces placed`}
             fontSize={fpx(22)}
             color={{ r: 0.8, g: 0.8, b: 0.9, a: 0.85 }}
-            uiTransform={{ width: '100%', height: px(40) }}
+            uiTransform={{ width: '100%', height: pxm(40) }}
             textAlign='middle-center'
           />
         </UiEntity>
@@ -520,20 +535,20 @@ export function initHUD(): void {
 
           {/* "NEXT BUILD IN" label */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: barH + px(22), left: 0 }, width: '100%', height: px(58), alignItems: 'center', justifyContent: 'center' }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH + pxm(22), left: 0 }, width: '100%', height: pxm(58), alignItems: 'center', justifyContent: 'center' }}
           >
             <Label
               value='NEXT BUILD IN'
               fontSize={fpx(26)}
               color={{ r: 0.75, g: 0.85, b: 1, a: Math.max(0.4, 0.7 + Math.sin(floatTime * 3.5) * 0.3) }}
-              uiTransform={{ width: '100%', height: px(58) }}
+              uiTransform={{ width: '100%', height: pxm(58) }}
               textAlign='middle-center'
             />
           </UiEntity>
 
           {/* Countdown number — warm color cycle */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: barH + px(70), left: 0 }, width: '100%', height: px(200), alignItems: 'center', justifyContent: 'center' }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH + pxm(70), left: 0 }, width: '100%', height: pxm(200), alignItems: 'center', justifyContent: 'center' }}
           >
             <Label
               value={`${Math.max(0, cinematicSecondsLeft(phase, snap.secondsLeft))}`}
@@ -544,14 +559,14 @@ export function initHUD(): void {
                 b: Math.max(0, 0.1  + Math.sin(floatTime * 2.0 + 2.4) * 0.15),
                 a: 1
               }}
-              uiTransform={{ width: '100%', height: px(200) }}
+              uiTransform={{ width: '100%', height: pxm(200) }}
               textAlign='middle-center'
             />
           </UiEntity>
 
           {/* Depleting progress bar — total cinematic time remaining */}
           <UiEntity
-            uiTransform={{ positionType: 'absolute', position: { top: barH + px(288), left: cx(px(1200)) }, width: px(1200), height: px(5) }}
+            uiTransform={{ positionType: 'absolute', position: { top: barH + pxm(288), left: cx(px(1200)) }, width: px(1200), height: px(5) }}
             uiBackground={{ color: { r: 0.08, g: 0.08, b: 0.25, a: 0.7 } }}
           >
             <UiEntity
