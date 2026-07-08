@@ -1,6 +1,8 @@
 import { engine, Transform, GltfContainer, ColliderLayer } from '@dcl/sdk/ecs'
 import { Vector3, Quaternion } from '@dcl/sdk/math'
 import { getPlayer } from '@dcl/sdk/players'
+import { isMobile } from '@dcl/sdk/platform'
+import { setIsMobile } from './client/platform'
 import { isAuthoritativeServer } from './shared/runtime'
 import { initServer } from './server/server'
 import { clientResolveSystem, setLocalPlayer, updateLocalDisplayName } from './client/client'
@@ -46,6 +48,10 @@ function waitForPlayer(attempt = 0): Promise<void> {
 
       const displayName = player?.name?.trim() || playerId.slice(0, 8)
       setLocalPlayer(playerId, displayName)
+      // Safe to query here: waitForPlayer already spans several frames, so
+      // the async platform info is populated (frame-0 reads return null).
+      setIsMobile(isMobile())
+      console.log(`[CLIENT] platform mobile=${isMobile()}`)
       console.log(`[CLIENT] player=${displayName} (${playerId.slice(0, 8)})`)
 
       // Scene + HUD

@@ -14,6 +14,7 @@ import { movePlayerTo } from '~system/RestrictedActions'
 import { SlotDefinition, TEMPLATES, TemplateId, getTemplate } from '../shared/templates'
 import { getClientSnapshot, requestAttach, getLocalPlayerId, ClientSnapshot } from './client'
 import { onWrongPart, showFeedback, playSuccess } from './hud'
+import { getIsMobile } from './platform'
 
 // Feature flag for #2 (cinematic dance + explosion). Turned OFF while we
 // isolate a "player falls into the void during the cinematic" bug that
@@ -86,9 +87,14 @@ const RESPAWN_POSITIONS = [
 const RESPAWN_LOOK_TARGET = Vector3.create(SCENE_CENTER.x, TEMPLATE_BASE_Y + 2, SCENE_CENTER.z)
 
 //  Trophy system
-// 3 (was 5): each trophy prewarns up to 21 hidden GLB instances at init —
-// the instantiation spike was heavy enough to matter on mobile explorers.
+// 3 desktop / 2 mobile (was 5): each trophy prewarns up to 21 hidden GLB
+// instances — the instantiation cost was heavy enough to matter on mobile
+// explorers. Resolved lazily via trophyBudget() because platform info is
+// not available at module load.
 const MAX_TROPHIES       = 3
+function trophyBudget(): number {
+  return getIsMobile() ? 2 : MAX_TROPHIES
+}
 const TROPHY_BASE_Y      = TEMPLATE_BASE_Y + 3.5   // orbit centre height
 const TROPHY_ORBIT_SPD   = 0.22                     // rad/s
 // Five distinct radii so trophies never overlap
@@ -293,6 +299,26 @@ function releaseEntity(e: Entity | undefined): void {
 // physically walkable throughout the animation and entity count stays minimal.
 const PARTICLES_PER_BLOCK = 10
 const MAX_PARTICLES = 100
+const MAX_PARTICLES_MOBILE = 40
+
+//  Deferred prewarm
+// Trophy + particle pools are not needed until the first round ends (≥60s
+// after load), so their entity creations are spread a few per frame instead
+// of all landing on the init frame — that single-frame instantiation spike
+// was heavy enough to hurt scene startup on mobile explorers.
+const deferredPrewarmQueue: (() => void)[] = []
+const PREWARM_PER_FRAME = 6
+
+function deferredPrewarmSystem(_dt: number): void {
+  for (let i = 0; i < PREWARM_PER_FRAME && deferredPrewarmQueue.length > 0; i++) {
+    const create = deferredPrewarmQueue.shift()
+    if (create) create()
+  }
+  if (deferredPrewarmQueue.length === 0) {
+    engine.removeSystem('dbc:prewarm')
+    console.log('[SCENE] deferred prewarm complete')
+  }
+}
 
 // Each block's last animated position during PERFORM, so the explosion fires
 // from where the blocks actually were when the cutscene ended.
@@ -327,18 +353,22 @@ function createParticleEntity(): Entity {
   return e
 }
 
-// Prewarm only particle pool — solids are already prewarmed by prewarmPools().
-function prewarmCinematicPools(): void {
+// Queue only particle pool — solids are already prewarmed by prewarmPools().
+// Creations land on the deferred queue, a few per frame.
+function queueCinematicPrewarm(): void {
   let maxSlots = 0
   for (const id of Object.keys(TEMPLATES)) {
     maxSlots = Math.max(maxSlots, TEMPLATES[id as TemplateId].length)
   }
-  const particles = Math.min(maxSlots * PARTICLES_PER_BLOCK, MAX_PARTICLES)
-  for (let i = 0; i < particles; i++) particlePoolFree.push(createParticleEntity())
-  console.log(`[CINEMATIC] prewarmed particles=${particles}`)
+  const budget = getIsMobile() ? MAX_PARTICLES_MOBILE : MAX_PARTICLES
+  const particles = Math.min(maxSlots * PARTICLES_PER_BLOCK, budget)
+  for (let i = 0; i < particles; i++) {
+    deferredPrewarmQueue.push(() => { particlePoolFree.push(createParticleEntity()) })
+  }
+  console.log(`[CINEMATIC] queued particles=${particles}`)
 }
 
-function prewarmTrophyPools(): void {
+function queueTrophyPrewarm(): void {
   const maxPerPart: Record<PartType, number> = { CUBE: 0, CYLINDER: 0, CONE: 0 }
   for (const id of Object.keys(TEMPLATES)) {
     const slots = TEMPLATES[id as TemplateId]
@@ -346,45 +376,50 @@ function prewarmTrophyPools(): void {
     for (const s of slots) cnt[s.requiredPart]++
     for (const p of PART_TYPES) maxPerPart[p] = Math.max(maxPerPart[p], cnt[p])
   }
+  const budget = trophyBudget()
   let total = 0
   for (const p of PART_TYPES) {
-    for (let i = 0; i < MAX_TROPHIES * maxPerPart[p]; i++) {
-      const e = engine.addEntity()
-      Transform.create(e, {
-        position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
-        scale: Vector3.Zero(),
-        rotation: Quaternion.Identity()
+    for (let i = 0; i < budget * maxPerPart[p]; i++) {
+      deferredPrewarmQueue.push(() => {
+        const e = engine.addEntity()
+        Transform.create(e, {
+          position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
+          scale: Vector3.Zero(),
+          rotation: Quaternion.Identity()
+        })
+        GltfContainer.create(e, {
+          src: PART_GLB[p],
+          visibleMeshesCollisionMask: 0,
+          invisibleMeshesCollisionMask: 0
+        })
+        trophyBlockPool[p].push(e)
       })
-      GltfContainer.create(e, {
-        src: PART_GLB[p],
-        visibleMeshesCollisionMask: 0,
-        invisibleMeshesCollisionMask: 0
-      })
-      trophyBlockPool[p].push(e)
       total++
     }
   }
-  for (let i = 0; i < MAX_TROPHIES; i++) {
-    const e = engine.addEntity()
-    Transform.create(e, {
-      position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
-      scale: Vector3.One(),
-      rotation: Quaternion.Identity()
+  for (let i = 0; i < budget; i++) {
+    deferredPrewarmQueue.push(() => {
+      const e = engine.addEntity()
+      Transform.create(e, {
+        position: Vector3.create(SCENE_CENTER.x, HIDDEN_Y, SCENE_CENTER.z),
+        scale: Vector3.One(),
+        rotation: Quaternion.Identity()
+      })
+      TextShape.create(e, {
+        text: '',
+        fontSize: 3,
+        textColor: { r: 1, g: 1, b: 1, a: 0.95 },
+        outlineColor: { r: 0, g: 0, b: 0 },
+        outlineWidth: 0.08
+      })
+      Billboard.create(e, { billboardMode: BillboardMode.BM_Y })
+      trophyLabelPool.push(e)
     })
-    TextShape.create(e, {
-      text: '',
-      fontSize: 3,
-      textColor: { r: 1, g: 1, b: 1, a: 0.95 },
-      outlineColor: { r: 0, g: 0, b: 0 },
-      outlineWidth: 0.08
-    })
-    Billboard.create(e, { billboardMode: BillboardMode.BM_Y })
-    trophyLabelPool.push(e)
     total++
   }
   console.log(
-    `[TROPHY] prewarmed total=${total} cube=${MAX_TROPHIES * maxPerPart.CUBE} ` +
-    `cyl=${MAX_TROPHIES * maxPerPart.CYLINDER} cone=${MAX_TROPHIES * maxPerPart.CONE}`
+    `[TROPHY] queued total=${total} budget=${budget} cube=${budget * maxPerPart.CUBE} ` +
+    `cyl=${budget * maxPerPart.CYLINDER} cone=${budget * maxPerPart.CONE}`
   )
 }
 
@@ -814,8 +849,12 @@ export function initArena(): void {
 export function initScene(getPart: () => PartType): void {
   getSelectedPartFn = getPart
   prewarmPools()
-  if (CINEMATIC_ANIM_ENABLED) prewarmCinematicPools()
-  prewarmTrophyPools()
+  // Trophy + particle pools are queued and created a few per frame — they
+  // are not needed until the first round ends. Slot pools stay synchronous
+  // because the first BUILD starts right away.
+  if (CINEMATIC_ANIM_ENABLED) queueCinematicPrewarm()
+  queueTrophyPrewarm()
+  engine.addSystem(deferredPrewarmSystem, 9, 'dbc:prewarm')
 
   ux.on('wrongPart', (data: any) => {
     if (!data) return
@@ -1102,7 +1141,7 @@ function spawnTrophy(snap: ClientSnapshot): void {
   const slots = getTemplate(snap.templateId)
   if (!slots) return
 
-  if (trophies.length >= MAX_TROPHIES) {
+  if (trophies.length >= trophyBudget()) {
     const old = trophies.shift()!
     releaseTrophyEntry(old)
   }

@@ -4,8 +4,10 @@
   "description": "SDK7 Template scene",
   "scripts": {
     "start": "sdk-commands start",
+    "start:mobile": "sdk-commands start --mobile",
     "deploy": "sdk-commands deploy",
-    "build": "sdk-commands build",
+    "build": "sdk-commands build --production",
+    "build:dev": "sdk-commands build",
     "upgrade-sdk": "npm install --save-dev @dcl/sdk@latest",
     "upgrade-sdk:next": "npm install --save-dev @dcl/sdk@next",
     "server-logs": "npx -y @dcl/sdk-commands@7.23.4-26106700711.commit-2afa13b sdk-server-logs",
