@@ -31,12 +31,6 @@ export const PART_GLB: Record<PartType, string> = {
   CONE:     'assets/scene/PYRAMID_OPAQUE.glb'
 }
 
-export const PART_GLB_ALPHA: Record<PartType, string> = {
-  CUBE:     'assets/scene/CUBE_ALPHA.glb',
-  CYLINDER: 'assets/scene/CYLINDER_ALPHA.glb',
-  CONE:     'assets/scene/PYRAMID_ALPHA.glb'
-}
-
 export const PART_LABEL: Record<PartType, string> = {
   CUBE:     'Cube',
   CYLINDER: 'Cylinder',

@@ -116,13 +116,20 @@ function initAudio(): void {
   }
   ambientEntity = engine.addEntity()
   Transform.create(ambientEntity, { position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y + 1, SCENE_CENTER.z) })
-  AudioSource.create(ambientEntity, {
-    audioClipUrl: 'assets/sounds/ambient.mp3',
-    playing: true,
-    loop: true,
-    volume: 0.06,
-    global: true
-  })
+  // Deferred: creating the AudioSource triggers the MP3 download, which
+  // otherwise competes with code + GLBs during the initial scene load. The
+  // ambient loop is atmosphere, not gameplay — let the scene come up first.
+  setTimeout(() => {
+    try {
+      AudioSource.create(ambientEntity, {
+        audioClipUrl: 'assets/sounds/ambient.mp3',
+        playing: true,
+        loop: true,
+        volume: 0.06,
+        global: true
+      })
+    } catch (_) {}
+  }, 8000)
 }
 
 //  Shoulder carried piece

@@ -19,3 +19,14 @@ README.md
 *.rar
 *.md
 src
+# Peso muerto: no se referencia en runtime (src/ ni main.crdt/composite).
+# Se queda en el repo para el editor, pero no se sube al mundo.
+thumbnails
+assets/images
+assets/scene/arrow.glb
+assets/scene/Models/DBC/DBCROBOTLEVITANDO_20260429.glb
+assets/scene/CUBE_ALPHA.glb
+assets/scene/CYLINDER_ALPHA.glb
+assets/scene/PYRAMID_ALPHA.glb
+assets/scene/ICOSPHERE_ALPHA.glb
+assets/scene/ICOSPHERE_OPAQUE.glb
