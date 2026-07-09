@@ -3,7 +3,7 @@ import { Vector3, Quaternion } from '@dcl/sdk/math'
 import { getPlayer } from '@dcl/sdk/players'
 import { isMobile } from '@dcl/sdk/platform'
 import { setIsMobile } from './client/platform'
-import { isAuthoritativeServer } from './shared/runtime'
+import { isAuthoritativeServer, isDenoServerRuntime } from './shared/runtime'
 import { initServer } from './server/server'
 import { clientResolveSystem, setLocalPlayer, updateLocalDisplayName } from './client/client'
 import { initArena, initScene, reconcileScene, cinematicAnimSystem, CINEMATIC_ANIM_ENABLED, trophySystem, boundaryGuardSystem } from './client/scene'
@@ -11,6 +11,12 @@ import { initHUD, initShoulder, hudInputSystem, hudTickSystem, getSelectedPart }
 import { cinematicSystem } from './client/cinematic'
 
 export async function main() {
+  // Fast-path visuals: unless this is definitely the headless server, show
+  // the arena immediately. Nothing visual should ever wait on an RPC — an
+  // explorer that is slow (or never) answering isServer would otherwise
+  // keep the whole scene stuck at load (observed on mobile).
+  if (!isDenoServerRuntime()) initArena()
+
   const isServer = await isAuthoritativeServer()
   console.log(`[RUNTIME] isServer=${isServer}`)
 
