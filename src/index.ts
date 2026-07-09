@@ -1,8 +1,7 @@
-import { engine, Transform, GltfContainer, ColliderLayer } from '@dcl/sdk/ecs'
+import { engine, Transform, GltfContainer, ColliderLayer, TextShape, Billboard, BillboardMode } from '@dcl/sdk/ecs'
 import { Vector3, Quaternion } from '@dcl/sdk/math'
 import { getPlayer } from '@dcl/sdk/players'
-import { isMobile } from '@dcl/sdk/platform'
-import { setIsMobile } from './client/platform'
+import { detectMobile } from './client/platform'
 import { isAuthoritativeServer, isDenoServerRuntime } from './shared/runtime'
 import { initServer } from './server/server'
 import { clientResolveSystem, setLocalPlayer, updateLocalDisplayName } from './client/client'
@@ -15,7 +14,10 @@ export async function main() {
   // the arena immediately. Nothing visual should ever wait on an RPC — an
   // explorer that is slow (or never) answering isServer would otherwise
   // keep the whole scene stuck at load (observed on mobile).
-  if (!isDenoServerRuntime()) initArena()
+  if (!isDenoServerRuntime()) {
+    bootStatus('main')
+    initArena()
+  }
 
   const isServer = await isAuthoritativeServer()
   console.log(`[RUNTIME] isServer=${isServer}`)
@@ -28,12 +30,51 @@ export async function main() {
 }
 
 async function initClient(): Promise<void> {
+  bootStatus('client-init')
   initArena()
+
+  // Fire-and-forget: caches the platform flag well before initScene reads
+  // it (player wait spans several frames). Guarded + time-boxed inside.
+  void detectMobile()
 
   // Register resolution system before we know who the player is.
   engine.addSystem(clientResolveSystem, 0, 'dbc:resolve')
 
   await waitForPlayer()
+}
+
+//  Boot beacon
+// In-world text marker that shows how far startup got. Readable on any
+// client (mobile included) without console access — if a stage never
+// appears, startup died right before it. Removed shortly after 'ready'.
+let bootEntity: ReturnType<typeof engine.addEntity> | null = null
+
+function bootStatus(stage: string): void {
+  console.log(`[BOOT] ${stage}`)
+  try {
+    if (bootEntity === null) {
+      bootEntity = engine.addEntity()
+      Transform.create(bootEntity, {
+        position: Vector3.create(16, 2.2, 16),
+        scale: Vector3.create(0.5, 0.5, 0.5)
+      })
+      TextShape.create(bootEntity, {
+        text: '',
+        fontSize: 3,
+        textColor: { r: 0.4, g: 1, b: 0.6, a: 0.9 },
+        outlineColor: { r: 0, g: 0, b: 0 },
+        outlineWidth: 0.1
+      })
+      Billboard.create(bootEntity, { billboardMode: BillboardMode.BM_Y })
+    }
+    TextShape.getMutable(bootEntity).text = `boot: ${stage}`
+    if (stage === 'ready') {
+      const e = bootEntity
+      setTimeout(() => {
+        try { engine.removeEntity(e!) } catch (_) {}
+      }, 15000)
+    }
+  } catch (_) {}
 }
 
 function waitForPlayer(attempt = 0): Promise<void> {
@@ -43,6 +84,7 @@ function waitForPlayer(attempt = 0): Promise<void> {
       const playerId = player?.userId?.trim()
 
       if (!playerId) {
+        if (attempt === 0) bootStatus('player-wait')
         if (attempt < 30) {
           setTimeout(() => waitForPlayer(attempt + 1).then(resolve), 300)
         } else {
@@ -54,10 +96,6 @@ function waitForPlayer(attempt = 0): Promise<void> {
 
       const displayName = player?.name?.trim() || playerId.slice(0, 8)
       setLocalPlayer(playerId, displayName)
-      // Safe to query here: waitForPlayer already spans several frames, so
-      // the async platform info is populated (frame-0 reads return null).
-      setIsMobile(isMobile())
-      console.log(`[CLIENT] platform mobile=${isMobile()}`)
       console.log(`[CLIENT] player=${displayName} (${playerId.slice(0, 8)})`)
 
       // Scene + HUD
@@ -77,6 +115,7 @@ function waitForPlayer(attempt = 0): Promise<void> {
       // Poll until Decentraland profile delivers the real name (it can lag).
       refreshDisplayName(playerId, 0)
 
+      bootStatus('ready')
       resolve()
     }
     tryInit()
