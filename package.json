@@ -15,7 +15,7 @@
     "server-logs:world": "npx -y @dcl/sdk-commands@7.23.4-26106700711.commit-2afa13b sdk-server-logs --world alienscrapyard.dcl.eth"
   },
   "devDependencies": {
-    "@dcl/js-runtime": "7.24.0",
+    "@dcl/js-runtime": "7.24.4",
     "@dcl/sdk": "^7.24.3"
   },
   "engines": {
