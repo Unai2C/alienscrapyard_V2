@@ -94,7 +94,7 @@
     "origin": "creator-hub",
     "projectId": "dfd71044-90f5-436f-81fe-d80ae35f90ee"
   },
-  "authoritativeMultiplayer": true,
+  "authoritativeMultiplayer": false,
   "logsPermissions": [
     "0x71a604439106269734935f82460efcc58cca84bb",
     "0xc49c6d50bb7baf4bfda7a144be2c681ed5e3341e"
