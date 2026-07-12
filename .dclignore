@@ -19,6 +19,10 @@ README.md
 *.rar
 *.md
 src
+# V4 diagnóstico: main.crdt son 18KB de esquemas de Smart Items del Creator
+# Hub que el juego no usa; el explorador lo parsea ANTES que nuestro código
+# y es sospechoso del cuelgue de carga en móvil. Fuera del deploy.
+main.crdt
 # Peso muerto: no se referencia en runtime (src/ ni main.crdt/composite).
 # Se queda en el repo para el editor, pero no se sube al mundo.
 thumbnails

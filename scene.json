@@ -4,7 +4,6 @@
   "display": {
     "title": "Alienscrapyard",
     "description": "Build together or fall apart. In AlienScrap, you and other players race against the clock to assemble a mystery structure from alien scrap pieces. Place the right piece in the right slot before time runs out.",
-    "favicon": "favicon_asset",
     "navmapThumbnail": "assets/scene/Images/Alienscrapyard_final_512x512.png"
   },
   "owner": "",
