@@ -23,6 +23,15 @@ src
 # Hub que el juego no usa; el explorador lo parsea ANTES que nuestro código
 # y es sospechoso del cuelgue de carga en móvil. Fuera del deploy.
 main.crdt
+# V6 diagnóstico: excluir TODOS los GLB/audio del deploy. La escena mínima
+# no los usa, pero el convertidor de asset bundles los procesa igualmente y
+# si falla con ellos no se genera el manifest móvil — la app se queda
+# esperando. Restaurar al reintroducir el juego.
+assets/scene/*.glb
+assets/scene/Models
+assets/sounds
+assets/scene/main.composite
+assets/scene/entity-names.ts
 # Peso muerto: no se referencia en runtime (src/ ni main.crdt/composite).
 # Se queda en el repo para el editor, pero no se sube al mundo.
 thumbnails
