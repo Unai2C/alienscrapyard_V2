@@ -112,21 +112,33 @@ function waitForPlayer(attempt = 0): Promise<void> {
       setLocalPlayer(playerId, displayName)
       console.log(`[CLIENT] player=${displayName} (${playerId.slice(0, 8)})`)
 
+      // Cada paso aislado: un fallo se marca en la baliza y NO impide los
+      // pasos siguientes — el HUD debe aparecer aunque la escena falle.
+      let failures = ''
       try {
         // V13: plantillas y bloques activos; trofeos y partículas quedan
         // para la V15. La cinemática (V14) ni se importa en esta etapa.
         initScene(getSelectedPart, { trophies: false, particles: false })
-        initHUD()
-        initShoulder(engine.PlayerEntity)
+        bootStatus('scene-ok')
+      } catch (err) { failures += ` scene:${err}`; bootStatus(`scene-ERROR ${err}`) }
 
+      try {
+        initHUD()
+        bootStatus('hud-ok')
+      } catch (err) { failures += ` hud:${err}`; bootStatus(`hud-ERROR ${err}`) }
+
+      try {
+        initShoulder(engine.PlayerEntity)
+      } catch (err) { failures += ` shoulder:${err}` }
+
+      try {
         engine.addSystem(hudInputSystem,      2, 'dbc:hudInput')
         engine.addSystem(reconcileScene,      3, 'dbc:scene')
         engine.addSystem(hudTickSystem,       4, 'dbc:hudTick')
         engine.addSystem(boundaryGuardSystem, 8, 'dbc:boundaryGuard')
-        bootStatus('V13B ready')
-      } catch (err) {
-        bootStatus(`init-ERROR ${err}`)
-      }
+      } catch (err) { failures += ` systems:${err}` }
+
+      bootStatus(failures === '' ? 'V13C ready' : `V13C con fallos:${failures}`)
 
       refreshDisplayName(playerId, 0)
       resolve()
