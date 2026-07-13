@@ -10,7 +10,6 @@ import {
   engine, Transform, TextShape, Billboard, BillboardMode
 } from '@dcl/sdk/ecs'
 import { Vector3 } from '@dcl/sdk/math'
-import { getPlayer } from '@dcl/sdk/players'
 import { detectMobile } from './client/platform'
 import { isAuthoritativeServer, isDenoServerRuntime } from './shared/runtime'
 import { initServer } from './server/server'
@@ -38,8 +37,31 @@ export async function main() {
 async function initClient(): Promise<void> {
   bootStatus('client-init')
   void detectMobile()
+  await loadPlayersModule()
   engine.addSystem(clientResolveSystem, 0, 'dbc:resolve')
   await waitForPlayer()
+}
+
+// Lazy + guarded: importing '@dcl/sdk/players' statically evaluates its
+// module (avatar/profile machinery) at bundle load — a crash there kills
+// the scene before main(). Without it we fall back to an anonymous local
+// player so the game still boots.
+type GetPlayerFn = () => { userId?: string; name?: string } | null
+let getPlayerFn: GetPlayerFn | null = null
+
+async function loadPlayersModule(): Promise<void> {
+  try {
+    const m = await import('@dcl/sdk/players')
+    getPlayerFn = m.getPlayer as GetPlayerFn
+    bootStatus('players-ok')
+  } catch (err) {
+    bootStatus(`players-FALLBACK ${err}`)
+  }
+}
+
+function readPlayer(): { userId?: string; name?: string } | null {
+  if (getPlayerFn === null) return null
+  try { return getPlayerFn() } catch (_) { return null }
 }
 
 //  Baliza de arranque
@@ -70,18 +92,20 @@ function bootStatus(stage: string): void {
 function waitForPlayer(attempt = 0): Promise<void> {
   return new Promise(resolve => {
     function tryInit() {
-      const player = getPlayer()
-      const playerId = player?.userId?.trim()
+      const player = readPlayer()
+      let playerId = player?.userId?.trim()
 
       if (!playerId) {
         if (attempt === 0) bootStatus('player-wait')
-        if (attempt < 30) {
+        // Keep retrying while the profile loads, but never die: an explorer
+        // that cannot deliver the profile still gets a playable game with
+        // an anonymous local identity.
+        if (attempt < 30 && getPlayerFn !== null) {
           setTimeout(() => waitForPlayer(attempt + 1).then(resolve), 300)
-        } else {
-          console.log('[CLIENT] player not available after retries; skipping client init')
-          resolve()
+          return
         }
-        return
+        playerId = `local-${Math.random().toString(36).slice(2, 10)}`
+        console.log(`[CLIENT] player profile unavailable — using ${playerId}`)
       }
 
       const displayName = player?.name?.trim() || playerId.slice(0, 8)
@@ -99,7 +123,7 @@ function waitForPlayer(attempt = 0): Promise<void> {
         engine.addSystem(reconcileScene,      3, 'dbc:scene')
         engine.addSystem(hudTickSystem,       4, 'dbc:hudTick')
         engine.addSystem(boundaryGuardSystem, 8, 'dbc:boundaryGuard')
-        bootStatus('V13 ready')
+        bootStatus('V13B ready')
       } catch (err) {
         bootStatus(`init-ERROR ${err}`)
       }
@@ -114,7 +138,7 @@ function waitForPlayer(attempt = 0): Promise<void> {
 function refreshDisplayName(playerId: string, attempt: number): void {
   if (attempt > 12) return
   setTimeout(() => {
-    const player = getPlayer()
+    const player = readPlayer()
     const name = player?.name?.trim()
     if (name && name.length > 0) {
       updateLocalDisplayName(name)

@@ -10,7 +10,30 @@ import {
   PartType, PART_TYPES, PART_GLB, GLB_SCALE,
   SCENE_CENTER, TEMPLATE_BASE_Y, DEBUG, RoundPhase
 } from '../shared/constants'
-import { movePlayerTo } from '~system/RestrictedActions'
+// Lazy + guarded: importing '~system/RestrictedActions' statically evaluates
+// at module load; on runtimes without the module the whole bundle dies
+// before main(). Loaded on demand — without it, respawns are skipped.
+type MovePlayerToFn = (args: {
+  newRelativePosition: Vector3
+  cameraTarget?: Vector3
+}) => Promise<unknown>
+let movePlayerToFn: MovePlayerToFn | null = null
+let movePlayerToTried = false
+
+function ensureMovePlayerTo(): void {
+  if (movePlayerToTried) return
+  movePlayerToTried = true
+  import('~system/RestrictedActions')
+    .then(m => { movePlayerToFn = m.movePlayerTo as MovePlayerToFn })
+    .catch(err => console.log(`[SCENE] RestrictedActions unavailable: ${err}`))
+}
+
+function movePlayerTo(args: { newRelativePosition: Vector3; cameraTarget?: Vector3 }): Promise<unknown> {
+  if (movePlayerToFn !== null) {
+    try { return movePlayerToFn(args) } catch (err) { return Promise.reject(err) }
+  }
+  return Promise.resolve()
+}
 import { SlotDefinition, TEMPLATES, TemplateId, getTemplate } from '../shared/templates'
 import { getClientSnapshot, requestAttach, getLocalPlayerId, ClientSnapshot } from './client'
 import { onWrongPart, showFeedback, playSuccess } from './hud'
@@ -832,6 +855,7 @@ export function clearAllVisuals(reason: string): void {
 
 export function initArena(): void {
   if (arenaEntity !== (0 as Entity)) return
+  ensureMovePlayerTo()
   arenaEntity = engine.addEntity()
   Transform.create(arenaEntity, {
     position: Vector3.create(SCENE_CENTER.x, SCENE_CENTER.y, SCENE_CENTER.z),
