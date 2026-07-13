@@ -2,38 +2,6 @@
   "version": 1,
   "components": [
     {
-      "name": "composite::root",
-      "jsonSchema": {
-        "type": "object",
-        "properties": {
-          "src": {
-            "type": "string",
-            "serializationType": "utf8-string"
-          },
-          "entities": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "src": {
-                  "type": "integer",
-                  "serializationType": "entity"
-                },
-                "dest": {
-                  "type": "integer",
-                  "serializationType": "entity"
-                }
-              },
-              "serializationType": "map"
-            },
-            "serializationType": "array"
-          }
-        },
-        "serializationType": "map"
-      },
-      "data": {}
-    },
-    {
       "name": "core-schema::Tags",
       "jsonSchema": {
         "type": "object",
@@ -180,7 +148,7 @@
                 "T",
                 "A"
               ],
-              "default": "T",
+              "default": "A",
               "serializationType": "enum-string",
               "enumObject": {
                 "Teen": "T",
@@ -484,14 +452,9 @@
               "game"
             ],
             "author": "i2C",
-            "tags": [
-              ""
-            ],
+            "email": "",
+            "tags": [],
             "layout": {
-              "base": {
-                "x": 0,
-                "y": 0
-              },
               "parcels": [
                 {
                   "x": 0,
@@ -509,8 +472,14 @@
                   "x": 1,
                   "y": 0
                 }
-              ]
+              ],
+              "base": {
+                "x": 0,
+                "y": 0
+              }
             },
+            "silenceVoiceChat": false,
+            "disablePortableExperiences": false,
             "spawnPoints": [
               {
                 "name": "sp_south",
@@ -602,7 +571,9 @@
                 }
               }
             ],
-            "skyboxConfig": {}
+            "skyboxConfig": {},
+            "creator": "",
+            "disableNearbyVoiceChat": false
           }
         }
       }
@@ -884,6 +855,10 @@
               {
                 "type": "delete",
                 "jsonSchema": "{\"type\":\"object\",\"properties\":{},\"serializationType\":\"map\"}"
+              },
+              {
+                "type": "spawn_entity",
+                "jsonSchema": "{\"type\":\"object\",\"properties\":{\"src\":{\"type\":\"string\",\"serializationType\":\"utf8-string\"},\"position\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"},\"y\":{\"type\":\"number\"},\"z\":{\"type\":\"number\"},\"w\":{\"type\":\"number\"}},\"serializationType\":\"vector3\"}},\"serializationType\":\"map\"}"
               }
             ]
           }
