@@ -1,5 +1,3 @@
-import { isServer } from '~system/EngineApi'
-
 // How long to wait for the EngineApi.isServer RPC before assuming client.
 const RPC_TIMEOUT_MS = 2000
 
@@ -12,13 +10,15 @@ export function isDenoServerRuntime(): boolean {
 export async function isAuthoritativeServer(): Promise<boolean> {
   if (isDenoServerRuntime()) return true
 
-  // Not every explorer implements the EngineApi.isServer RPC — mobile builds
-  // have been observed to never answer it, which left main() awaiting forever
-  // and the scene stuck at load. Racing a timeout guarantees startup can
-  // never hang: an unanswered probe means we are a client.
+  // Everything below is guarded: the '~system/EngineApi' import itself is
+  // dynamic (a static import dies at module load on runtimes without it),
+  // the isServer RPC may not exist, and when it exists it may never answer
+  // (observed on mobile). Any failure or timeout means "client".
   try {
+    const engineApi = await import('~system/EngineApi')
+    if (typeof engineApi.isServer !== 'function') return false
     const response = await Promise.race([
-      isServer({}),
+      engineApi.isServer({}),
       new Promise<null>(resolve => setTimeout(() => resolve(null), RPC_TIMEOUT_MS))
     ])
     if (response === null) {
@@ -27,7 +27,7 @@ export async function isAuthoritativeServer(): Promise<boolean> {
     }
     return response.isServer
   } catch (error) {
-    console.log('[RUNTIME] EngineApi.isServer failed — assuming client', error)
+    console.log(`[RUNTIME] EngineApi.isServer failed — assuming client: ${error}`)
     return false
   }
 }
