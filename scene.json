@@ -73,6 +73,11 @@
     "origin": "creator-hub",
     "projectId": "75e8c04f-0677-4576-bdba-183da678d5a6"
   },
+  "authoritativeMultiplayer": true,
+  "logsPermissions": [
+    "0x71a604439106269734935f82460efcc58cca84bb",
+    "0xc49c6d50bb7baf4bfda7a144be2c681ed5e3341e"
+  ],
   "worldConfiguration": {
     "name": "alienscrapyard.dcl.eth"
   },
