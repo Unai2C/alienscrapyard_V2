@@ -1,9 +1,16 @@
 {
   "ecs7": true,
   "runtimeVersion": "7",
+  "runtime": {
+    "permissions": [
+      "ALLOW_TO_SIGN_FETCH",
+      "ALLOW_TO_READ_USER_PUBLIC_KEY"
+    ]
+  },
   "display": {
     "title": "Alienscrapyard",
     "description": "Build together or fall apart. In AlienScrap, you and other players race against the clock to assemble a mystery structure from alien scrap pieces. Place the right piece in the right slot before time runs out.",
+    "favicon": "favicon_asset",
     "navmapThumbnail": "assets/scene/Images/Alienscrapyard_final_512x512.png"
   },
   "owner": "",
@@ -16,61 +23,31 @@
     "game"
   ],
   "scene": {
-    "base": "0,0",
     "parcels": [
-      "0,1",
-      "1,1",
       "0,0",
-      "1,0"
-    ]
+      "1,0",
+      "0,1",
+      "1,1"
+    ],
+    "base": "0,0"
   },
   "spawnPoints": [
     {
-      "name": "sp_south",
+      "name": "Spawn Point 1",
       "default": true,
       "position": {
-        "x": 16,
-        "y": 0,
-        "z": 1
-      },
-      "cameraTarget": {
-        "x": 16,
-        "y": 8,
-        "z": 16
-      }
-    },
-    {
-      "name": "sp_east",
-      "position": {
-        "x": 30,
-        "y": 0,
-        "z": 16
-      },
-      "cameraTarget": {
-        "x": 16,
-        "y": 8,
-        "z": 16
-      }
-    },
-    {
-      "name": "sp_north",
-      "position": {
-        "x": 16,
-        "y": 0,
-        "z": 30
-      },
-      "cameraTarget": {
-        "x": 16,
-        "y": 8,
-        "z": 16
-      }
-    },
-    {
-      "name": "sp_west",
-      "position": {
-        "x": 1,
-        "y": 0,
-        "z": 16
+        "x": [
+          16,
+          16
+        ],
+        "y": [
+          0,
+          0
+        ],
+        "z": [
+          2,
+          2
+        ]
       },
       "cameraTarget": {
         "x": 16,
@@ -88,7 +65,10 @@
     "portableExperiences": "enabled",
     "nearbyVoiceChat": "enabled"
   },
-  "creator": "",
+  "rating": "T",
+  "skyboxConfig": {
+    "fixedTime": 86400
+  },
   "source": {
     "origin": "creator-hub",
     "projectId": "75e8c04f-0677-4576-bdba-183da678d5a6"
@@ -96,7 +76,5 @@
   "worldConfiguration": {
     "name": "alienscrapyard.dcl.eth"
   },
-  "allowedMediaHostnames": [],
-  "rating": "T",
-  "skyboxConfig": {}
+  "creator": ""
 }
