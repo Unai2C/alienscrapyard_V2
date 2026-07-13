@@ -6,8 +6,8 @@
     "start": "sdk-commands start",
     "start:mobile": "sdk-commands start --mobile",
     "deploy": "sdk-commands deploy",
-    "build": "sdk-commands build --production",
-    "build:dev": "sdk-commands build",
+    "build": "sdk-commands build",
+    "build:prod": "sdk-commands build --production",
     "upgrade-sdk": "npm install --save-dev @dcl/sdk@latest",
     "upgrade-sdk:next": "npm install --save-dev @dcl/sdk@next",
     "server-logs": "npx -y @dcl/sdk-commands@7.24.4-28592331167.commit-697ce9e sdk-server-logs",
@@ -15,8 +15,8 @@
     "server-logs:world": "npx -y @dcl/sdk-commands@7.24.4-28592331167.commit-697ce9e sdk-server-logs --world alienscrapyard.dcl.eth"
   },
   "devDependencies": {
-    "@dcl/js-runtime": "7.24.0",
-    "@dcl/sdk": "^7.24.3"
+    "@dcl/js-runtime": "7.24.4",
+    "@dcl/sdk": "7.24.4"
   },
   "engines": {
     "node": ">=16.0.0",
