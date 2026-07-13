@@ -1,62 +1,48 @@
 // ============================================================
-// RECONSTRUCCIÓN POR ETAPAS — cada versión añade UNA pieza del
-// juego; la primera etapa que no cargue en móvil identifica el
-// módulo culpable sin ambigüedad.
-//
-//   V12 (esta): plataforma GLB + HUD + baliza
-//   V13: + servidor de rondas + plantillas/bloques (scene.ts)
+// RECONSTRUCCIÓN POR ETAPAS — cada versión añade UNA pieza.
+//   V12 ✓: plataforma GLB + HUD + baliza (superada en móvil)
+//   V13 (esta): + servidor de rondas + plantillas/bloques
+//               (sin cinemática, sin trofeos, sin partículas)
 //   V14: + cinemática (letterbox + cámara virtual)
-//   V15: + trofeos y partículas  → juego completo
+//   V15: + trofeos y partículas → juego completo
 // ============================================================
 import {
-  engine, Transform, GltfContainer, ColliderLayer,
-  TextShape, Billboard, BillboardMode
+  engine, Transform, TextShape, Billboard, BillboardMode
 } from '@dcl/sdk/ecs'
-import { Vector3, Quaternion } from '@dcl/sdk/math'
+import { Vector3 } from '@dcl/sdk/math'
+import { getPlayer } from '@dcl/sdk/players'
 import { detectMobile } from './client/platform'
-import { initHUD, hudInputSystem, hudTickSystem } from './client/hud'
+import { isAuthoritativeServer, isDenoServerRuntime } from './shared/runtime'
+import { initServer } from './server/server'
+import { clientResolveSystem, setLocalPlayer, updateLocalDisplayName } from './client/client'
+import { initArena, initScene, reconcileScene, boundaryGuardSystem } from './client/scene'
+import { initHUD, initShoulder, hudInputSystem, hudTickSystem, getSelectedPart } from './client/hud'
 
-export function main() {
-  bootStatus('main')
-
-  // Plataforma (GLB) creada inline — sin importar scene.ts en esta etapa.
-  try {
-    const arena = engine.addEntity()
-    Transform.create(arena, {
-      position: Vector3.create(16, 0, 16),
-      rotation: Quaternion.Identity(),
-      scale: Vector3.One()
-    })
-    GltfContainer.create(arena, {
-      src: 'assets/scene/Models/DBC/DBCPLATAFORMA_20260429.glb',
-      visibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS,
-      invisibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS
-    })
+export async function main() {
+  if (!isDenoServerRuntime()) {
+    bootStatus('main')
+    initArena()
     bootStatus('arena-ok')
-  } catch (err) {
-    bootStatus(`arena-ERROR ${err}`)
   }
 
-  // Detección de plataforma (lazy + guarded, nunca lanza).
+  const isServer = await isAuthoritativeServer()
+  console.log(`[RUNTIME] isServer=${isServer}`)
+
+  if (isServer) {
+    initServer()
+  } else {
+    await initClient()
+  }
+}
+
+async function initClient(): Promise<void> {
+  bootStatus('client-init')
   void detectMobile()
-
-  // HUD completo (react-ecs + audio).
-  try {
-    initHUD()
-    engine.addSystem(hudInputSystem, 2, 'dbc:hudInput')
-    engine.addSystem(hudTickSystem, 4, 'dbc:hudTick')
-    bootStatus('hud-ok')
-  } catch (err) {
-    bootStatus(`hud-ERROR ${err}`)
-    return
-  }
-
-  bootStatus('V12 ready')
+  engine.addSystem(clientResolveSystem, 0, 'dbc:resolve')
+  await waitForPlayer()
 }
 
 //  Baliza de arranque
-// Texto en escena visible en cualquier cliente sin consola. Si una etapa
-// no aparece, el arranque murió justo antes de ella.
 let bootEntity: ReturnType<typeof engine.addEntity> | null = null
 
 function bootStatus(stage: string): void {
@@ -79,4 +65,62 @@ function bootStatus(stage: string): void {
     }
     TextShape.getMutable(bootEntity).text = `boot: ${stage}`
   } catch (_) {}
+}
+
+function waitForPlayer(attempt = 0): Promise<void> {
+  return new Promise(resolve => {
+    function tryInit() {
+      const player = getPlayer()
+      const playerId = player?.userId?.trim()
+
+      if (!playerId) {
+        if (attempt === 0) bootStatus('player-wait')
+        if (attempt < 30) {
+          setTimeout(() => waitForPlayer(attempt + 1).then(resolve), 300)
+        } else {
+          console.log('[CLIENT] player not available after retries; skipping client init')
+          resolve()
+        }
+        return
+      }
+
+      const displayName = player?.name?.trim() || playerId.slice(0, 8)
+      setLocalPlayer(playerId, displayName)
+      console.log(`[CLIENT] player=${displayName} (${playerId.slice(0, 8)})`)
+
+      try {
+        // V13: plantillas y bloques activos; trofeos y partículas quedan
+        // para la V15. La cinemática (V14) ni se importa en esta etapa.
+        initScene(getSelectedPart, { trophies: false, particles: false })
+        initHUD()
+        initShoulder(engine.PlayerEntity)
+
+        engine.addSystem(hudInputSystem,      2, 'dbc:hudInput')
+        engine.addSystem(reconcileScene,      3, 'dbc:scene')
+        engine.addSystem(hudTickSystem,       4, 'dbc:hudTick')
+        engine.addSystem(boundaryGuardSystem, 8, 'dbc:boundaryGuard')
+        bootStatus('V13 ready')
+      } catch (err) {
+        bootStatus(`init-ERROR ${err}`)
+      }
+
+      refreshDisplayName(playerId, 0)
+      resolve()
+    }
+    tryInit()
+  })
+}
+
+function refreshDisplayName(playerId: string, attempt: number): void {
+  if (attempt > 12) return
+  setTimeout(() => {
+    const player = getPlayer()
+    const name = player?.name?.trim()
+    if (name && name.length > 0) {
+      updateLocalDisplayName(name)
+      console.log(`[CLIENT] display name refreshed: ${name}`)
+    } else {
+      refreshDisplayName(playerId, attempt + 1)
+    }
+  }, 800)
 }
