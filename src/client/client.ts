@@ -8,8 +8,17 @@ type SyncEntityFn = (entityId: Entity, componentIds: number[], entityEnumId?: nu
 let syncEntityFn: SyncEntityFn | null = null
 let networkLoadStarted = false
 
+// Local mode: the whole '@dcl/sdk/network' stack stays untouched (its init
+// throws unhandled errors on some runtimes). Attach requests are plain
+// local entities that a local round loop consumes in the same runtime.
+let localMode = false
+
+export function setLocalMode(value: boolean): void {
+  localMode = value
+}
+
 export function ensureNetworkModule(): void {
-  if (networkLoadStarted) return
+  if (networkLoadStarted || localMode) return
   networkLoadStarted = true
   import('@dcl/sdk/network')
     .then(m => { syncEntityFn = m.syncEntity })
@@ -189,7 +198,7 @@ export function requestAttach(slotId: string, partType: string): string {
     try { syncEntityFn(e, [AttachRequest.componentId]) } catch (err) {
       console.log(`[CLIENT] syncEntity failed: ${err}`)
     }
-  } else {
+  } else if (!localMode) {
     console.log('[CLIENT] attach created without sync — network module not ready')
   }
   console.log(`[CLIENT] attach ${requestId} ${templateId}#${roundNumber} ${slotId}/${partType}`)
