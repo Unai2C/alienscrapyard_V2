@@ -846,14 +846,24 @@ export function initArena(): void {
 }
 
 //  Public init
-export function initScene(getPart: () => PartType): void {
+// Feature gates for the staged rebuild: stages V13/V14 initialize the scene
+// without trophies/particles; V15 restores the defaults.
+let trophiesEnabled = true
+let particlesEnabled = true
+
+export function initScene(
+  getPart: () => PartType,
+  opts?: { trophies?: boolean; particles?: boolean }
+): void {
   getSelectedPartFn = getPart
+  trophiesEnabled = opts?.trophies !== false
+  particlesEnabled = opts?.particles !== false
   prewarmPools()
   // Trophy + particle pools are queued and created a few per frame — they
   // are not needed until the first round ends. Slot pools stay synchronous
   // because the first BUILD starts right away.
-  if (CINEMATIC_ANIM_ENABLED) queueCinematicPrewarm()
-  queueTrophyPrewarm()
+  if (CINEMATIC_ANIM_ENABLED && particlesEnabled) queueCinematicPrewarm()
+  if (trophiesEnabled) queueTrophyPrewarm()
   engine.addSystem(deferredPrewarmSystem, 9, 'dbc:prewarm')
 
   ux.on('wrongPart', (data: any) => {
@@ -1101,7 +1111,7 @@ export function reconcileScene(): void {
     // Always logged on transitions: a clean session must PROVE the checker ran.
     console.log(`[INTEGRITY] ${issues === 0 ? 'ok' : `issues=${issues}`} at=transition phase=${phase}`)
 
-    if (phase === 'BUILD_COMPLETE' && snap.performanceType === 'PERFECT' && snap.roundNumber !== lastTrophyRound) {
+    if (trophiesEnabled && phase === 'BUILD_COMPLETE' && snap.performanceType === 'PERFECT' && snap.roundNumber !== lastTrophyRound) {
       lastTrophyRound = snap.roundNumber
       spawnTrophy(snap)
     }
