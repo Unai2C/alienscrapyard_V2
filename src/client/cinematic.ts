@@ -34,14 +34,31 @@ const SHOTS: Shot[] = [
 ]
 const DOLLY_DURATION = 10 // seconds
 
-const camEntity = engine.addEntity()
-Transform.create(camEntity, {
-  position: Vector3.create(SHOTS[0].startPos.x, SHOTS[0].startPos.y, SHOTS[0].startPos.z),
-  rotation: Quaternion.fromEulerDegrees(SHOTS[0].pitch, SHOTS[0].yaw, 0)
-})
-VirtualCamera.create(camEntity, {
-  defaultTransition: { transitionMode: VirtualCamera.Transition.Time(0) }
-})
+// Lazy + guarded: creating the VirtualCamera at module load crashed the
+// whole bundle on explorers without virtual-camera support (mobile) — the
+// scene loaded but no code ran. Created on first use; null means "this
+// client can't do cinematic cameras" and the letterbox stays off.
+let camEntity: ReturnType<typeof engine.addEntity> | null = null
+let camFailed = false
+
+function getCamEntity(): ReturnType<typeof engine.addEntity> | null {
+  if (camEntity !== null || camFailed) return camEntity
+  try {
+    const e = engine.addEntity()
+    Transform.create(e, {
+      position: Vector3.create(SHOTS[0].startPos.x, SHOTS[0].startPos.y, SHOTS[0].startPos.z),
+      rotation: Quaternion.fromEulerDegrees(SHOTS[0].pitch, SHOTS[0].yaw, 0)
+    })
+    VirtualCamera.create(e, {
+      defaultTransition: { transitionMode: VirtualCamera.Transition.Time(0) }
+    })
+    camEntity = e
+  } catch (err) {
+    camFailed = true
+    console.log(`[CINEMATIC] VirtualCamera unavailable: ${err}`)
+  }
+  return camEntity
+}
 
 let lastPhase: RoundPhase = 'IDLE'
 let cinematicActive = false
@@ -62,15 +79,20 @@ function activateCinematic(round: number): void {
   cameraProbed = false
   setCarriedVisible(false)
 
-  const t = Transform.getMutable(camEntity)
-  t.position = Vector3.create(currentShot.startPos.x, currentShot.startPos.y, currentShot.startPos.z)
-  t.rotation = Quaternion.fromEulerDegrees(currentShot.pitch, currentShot.yaw, 0)
-  try {
-    MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: camEntity })
-    cameraEngaged = true
-  } catch (err) {
+  const cam = getCamEntity()
+  if (cam !== null) {
+    try {
+      const t = Transform.getMutable(cam)
+      t.position = Vector3.create(currentShot.startPos.x, currentShot.startPos.y, currentShot.startPos.z)
+      t.rotation = Quaternion.fromEulerDegrees(currentShot.pitch, currentShot.yaw, 0)
+      MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: cam })
+      cameraEngaged = true
+    } catch (err) {
+      cameraEngaged = false
+      console.log(`[CINEMATIC] MainCamera assign FAILED: ${err}`)
+    }
+  } else {
     cameraEngaged = false
-    console.log(`[CINEMATIC] MainCamera assign FAILED: ${err}`)
   }
   // Letterbox must follow the real camera state, never the phase alone.
   setCinematicCameraActive(cameraEngaged)
@@ -139,8 +161,10 @@ export function cinematicSystem(dt: number): void {
   if (!cameraProbed && elapsed >= 1) {
     cameraProbed = true
     try {
+      const camE = getCamEntity()
+      if (camE === null) throw new Error('no virtual camera')
       const cam = Transform.get(engine.CameraEntity).position
-      const virt = Transform.get(camEntity).position
+      const virt = Transform.get(camE).position
       const dx = cam.x - virt.x
       const dy = cam.y - virt.y
       const dz = cam.z - virt.z
@@ -166,7 +190,9 @@ export function cinematicSystem(dt: number): void {
   // Dolly the camera forward over DOLLY_DURATION seconds.
   const progress = Math.min(elapsed / DOLLY_DURATION, 1)
   try {
-    const t = Transform.getMutable(camEntity)
+    const camE = getCamEntity()
+    if (camE === null) return
+    const t = Transform.getMutable(camE)
     t.position = Vector3.create(
       currentShot.startPos.x + (currentShot.endPos.x - currentShot.startPos.x) * progress,
       currentShot.startPos.y + (currentShot.endPos.y - currentShot.startPos.y) * progress,

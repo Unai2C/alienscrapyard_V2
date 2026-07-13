@@ -1,5 +1,20 @@
 import { engine, Entity } from '@dcl/sdk/ecs'
-import { syncEntity } from '@dcl/sdk/network'
+
+// Lazy + guarded: importing '@dcl/sdk/network' runs comms setup at module
+// load, which crashed the whole bundle on the mobile explorer (scene loaded
+// but no code ran). Loaded on demand; when unavailable, attach requests are
+// still created locally and a warning is logged instead of crashing.
+type SyncEntityFn = (entityId: Entity, componentIds: number[], entityEnumId?: number) => void
+let syncEntityFn: SyncEntityFn | null = null
+let networkLoadStarted = false
+
+export function ensureNetworkModule(): void {
+  if (networkLoadStarted) return
+  networkLoadStarted = true
+  import('@dcl/sdk/network')
+    .then(m => { syncEntityFn = m.syncEntity })
+    .catch(err => console.log(`[CLIENT] network module unavailable: ${err}`))
+}
 import { RoundState, GameTimer, AttachRequest } from '../shared/components'
 import { RoundPhase, STALE_THRESHOLD_MS } from '../shared/constants'
 
@@ -136,6 +151,9 @@ export function clientResolveSystem(_dt: number): void {
 export function setLocalPlayer(playerId: string, displayName: string): void {
   localPlayerId = playerId
   localDisplayName = displayName || playerId.slice(0, 8)
+  // Kick off the network module load now so syncEntity is ready well before
+  // the first click. Guarded internally; never throws.
+  ensureNetworkModule()
 }
 
 export function updateLocalDisplayName(displayName: string): void {
@@ -167,7 +185,13 @@ export function requestAttach(slotId: string, partType: string): string {
     templateId,
     roundNumber
   })
-  syncEntity(e, [AttachRequest.componentId])
+  if (syncEntityFn !== null) {
+    try { syncEntityFn(e, [AttachRequest.componentId]) } catch (err) {
+      console.log(`[CLIENT] syncEntity failed: ${err}`)
+    }
+  } else {
+    console.log('[CLIENT] attach created without sync — network module not ready')
+  }
   console.log(`[CLIENT] attach ${requestId} ${templateId}#${roundNumber} ${slotId}/${partType}`)
   return requestId
 }

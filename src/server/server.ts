@@ -1,5 +1,4 @@
 import { engine, Entity } from '@dcl/sdk/ecs'
-import { syncEntity } from '@dcl/sdk/network'
 import { RoundState, GameTimer, AttachRequest, ux } from '../shared/components'
 import {
   BUILD_DURATION_SECONDS,
@@ -39,11 +38,19 @@ export function initServer(): void {
     builders: '',
     stateSeq: 0
   })
-  syncEntity(roundEntity, [RoundState.componentId], ROUND_ENTITY_ENUM_ID)
-
   timerEntity = engine.addEntity()
   GameTimer.create(timerEntity, { secondsLeft: BUILD_DURATION_SECONDS })
-  syncEntity(timerEntity, [GameTimer.componentId], TIMER_ENTITY_ENUM_ID)
+
+  // Dynamic import: '@dcl/sdk/network' has module-load side effects that are
+  // fatal on some client runtimes; the shared bundle must never import it
+  // statically. On the server it resolves immediately.
+  import('@dcl/sdk/network')
+    .then(({ syncEntity }) => {
+      syncEntity(roundEntity, [RoundState.componentId], ROUND_ENTITY_ENUM_ID)
+      syncEntity(timerEntity, [GameTimer.componentId], TIMER_ENTITY_ENUM_ID)
+      console.log('[SERVER] state entities synced')
+    })
+    .catch(err => console.log(`[SERVER] network module unavailable: ${err}`))
 
   console.log('[SERVER] initialized — first round begins shortly')
   setTimeout(() => enterBuild(), 1000)
