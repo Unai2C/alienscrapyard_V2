@@ -1,126 +1,91 @@
 // ============================================================
-// RECONSTRUCCIÓN POR ETAPAS
-//   V12  ✓: plataforma GLB + HUD (superada en móvil)
-//   V13D (esta): JUEGO COMPLETO EN MODO LOCAL — rondas, bloques,
-//        plantillas y HUD corriendo en el propio cliente. No se
-//        toca '@dcl/sdk/network' ni '@dcl/sdk/players': la
-//        simulación local demostró que la pila de sync del SDK
-//        lanza errores sin capturar ("Couldn't fetch profile
-//        data") que matan la escena en algunos runtimes.
-//   Siguientes: +cinemática, +trofeos, +sync multijugador (cada
-//        una como etapa aislada).
+// V13F — SONDA DE MÓDULOS
+// Solo importa estáticamente lo que V12 demostró que funciona en
+// móvil (ecs + math). Todos los módulos del juego se cargan UNO A
+// UNO en runtime; el cartel flotante muestra cuál pasa y cuál
+// revienta con su error. Un vistazo al móvil = culpable exacto.
 // ============================================================
 import {
-  engine, Transform, TextShape, Billboard, BillboardMode
+  engine, Transform, GltfContainer, ColliderLayer, MeshRenderer,
+  Material, TextShape, Billboard, BillboardMode
 } from '@dcl/sdk/ecs'
-import { Vector3 } from '@dcl/sdk/math'
-import { detectMobile } from './client/platform'
-import { isDenoServerRuntime } from './shared/runtime'
-import { initServer } from './server/server'
-import { clientResolveSystem, setLocalPlayer, setLocalMode, updateLocalDisplayName } from './client/client'
-import { initArena, initScene, reconcileScene, boundaryGuardSystem } from './client/scene'
-import { initHUD, initShoulder, hudInputSystem, hudTickSystem, getSelectedPart } from './client/hud'
+import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 
 export async function main() {
-  // Servidor autoritativo headless (Deno): solo el bucle de rondas con sync.
-  if (isDenoServerRuntime()) {
-    initServer()
-    return
-  }
+  // Suelo primitivo + cartel: visibles pase lo que pase después.
+  const ground = engine.addEntity()
+  Transform.create(ground, { position: Vector3.create(16, 0.05, 16), scale: Vector3.create(30, 0.1, 30) })
+  MeshRenderer.setBox(ground)
+  Material.setPbrMaterial(ground, { albedoColor: Color4.create(0.15, 0.25, 0.2, 1) })
 
-  bootStatus('main')
-  initArena()
-  bootStatus('arena-ok')
-  void detectMobile()
+  setBeacon('sonda arrancando...')
 
-  // MODO LOCAL: el bucle de rondas corre en este mismo cliente y las
-  // peticiones de colocación se procesan localmente. Cero networking.
-  setLocalMode(true)
+  // Plataforma GLB (V12 la validó en móvil).
   try {
-    initServer({ sync: false })
-    bootStatus('local-rounds-ok')
-  } catch (err) {
-    bootStatus(`local-rounds-ERROR ${err}`)
-  }
+    const arena = engine.addEntity()
+    Transform.create(arena, {
+      position: Vector3.create(16, 0, 16),
+      rotation: Quaternion.Identity(),
+      scale: Vector3.One()
+    })
+    GltfContainer.create(arena, {
+      src: 'assets/scene/Models/DBC/DBCPLATAFORMA_20260429.glb',
+      visibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS,
+      invisibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS
+    })
+  } catch (_) {}
 
-  engine.addSystem(clientResolveSystem, 0, 'dbc:resolve')
+  // Carga secuencial de cada módulo del juego.
+  const probes: Array<[string, () => Promise<unknown>]> = [
+    ['constants',  () => import('./shared/constants')],
+    ['templates',  () => import('./shared/templates')],
+    ['components', () => import('./shared/components')],
+    ['runtime',    () => import('./shared/runtime')],
+    ['platform',   () => import('./client/platform')],
+    ['client',     () => import('./client/client')],
+    ['hud',        () => import('./client/hud')],
+    ['scene',      () => import('./client/scene')],
+    ['server',     () => import('./server/server')],
+    ['cinematic',  () => import('./client/cinematic')]
+  ]
 
-  // Identidad: vía '~system/UserIdentity' (dinámico + guarded). Sin ella,
-  // identidad anónima local — el juego arranca igual.
-  const { playerId, displayName } = await resolveIdentity()
-  setLocalPlayer(playerId, displayName)
-  updateLocalDisplayName(displayName)
-  console.log(`[CLIENT] player=${displayName} (${playerId.slice(0, 8)})`)
-
-  let failures = ''
-  try {
-    initScene(getSelectedPart, { trophies: false, particles: false })
-    bootStatus('scene-ok')
-  } catch (err) { failures += ` scene:${err}`; bootStatus(`scene-ERROR ${err}`) }
-
-  try {
-    initHUD()
-    bootStatus('hud-ok')
-  } catch (err) { failures += ` hud:${err}`; bootStatus(`hud-ERROR ${err}`) }
-
-  try {
-    initShoulder(engine.PlayerEntity)
-  } catch (err) { failures += ` shoulder:${err}` }
-
-  try {
-    engine.addSystem(hudInputSystem,      2, 'dbc:hudInput')
-    engine.addSystem(reconcileScene,      3, 'dbc:scene')
-    engine.addSystem(hudTickSystem,       4, 'dbc:hudTick')
-    engine.addSystem(boundaryGuardSystem, 8, 'dbc:boundaryGuard')
-  } catch (err) { failures += ` systems:${err}` }
-
-  bootStatus(failures === '' ? 'V13E ready' : `V13E con fallos:${failures}`)
-}
-
-//  Identidad sin '@dcl/sdk/players'
-async function resolveIdentity(): Promise<{ playerId: string; displayName: string }> {
-  const fallback = {
-    playerId: `local-${Math.random().toString(36).slice(2, 10)}`,
-    displayName: 'Player'
-  }
-  try {
-    const userIdentity = await import('~system/UserIdentity')
-    const res = await Promise.race([
-      userIdentity.getUserData({}),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 3000))
-    ])
-    const data = res && 'data' in res ? res.data : undefined
-    if (data?.userId) {
-      return { playerId: data.userId, displayName: data.displayName || data.userId.slice(0, 8) }
+  const lines: string[] = []
+  for (const [name, load] of probes) {
+    try {
+      await load()
+      lines.push(`${name}: OK`)
+    } catch (err) {
+      lines.push(`${name}: ERROR ${String(err).slice(0, 80)}`)
     }
-    console.log('[CLIENT] getUserData sin userId — identidad local')
-  } catch (err) {
-    console.log(`[CLIENT] UserIdentity unavailable — identidad local: ${err}`)
+    setBeacon(lines.join('\n'))
+    console.log(`[PROBE] ${lines[lines.length - 1]}`)
   }
-  return fallback
+
+  lines.push('--- SONDA COMPLETA ---')
+  setBeacon(lines.join('\n'))
+  console.log('[PROBE] end')
 }
 
-//  Baliza de arranque
-let bootEntity: ReturnType<typeof engine.addEntity> | null = null
+//  Cartel
+let beaconEntity: ReturnType<typeof engine.addEntity> | null = null
 
-function bootStatus(stage: string): void {
-  console.log(`[BOOT] ${stage}`)
+function setBeacon(text: string): void {
   try {
-    if (bootEntity === null) {
-      bootEntity = engine.addEntity()
-      Transform.create(bootEntity, {
-        position: Vector3.create(16, 9.5, 16),
-        scale: Vector3.create(0.5, 0.5, 0.5)
+    if (beaconEntity === null) {
+      beaconEntity = engine.addEntity()
+      Transform.create(beaconEntity, {
+        position: Vector3.create(16, 4, 16),
+        scale: Vector3.create(0.4, 0.4, 0.4)
       })
-      TextShape.create(bootEntity, {
+      TextShape.create(beaconEntity, {
         text: '',
-        fontSize: 3,
-        textColor: { r: 0.4, g: 1, b: 0.6, a: 0.9 },
+        fontSize: 2,
+        textColor: { r: 0.4, g: 1, b: 0.6, a: 1 },
         outlineColor: { r: 0, g: 0, b: 0 },
         outlineWidth: 0.1
       })
-      Billboard.create(bootEntity, { billboardMode: BillboardMode.BM_Y })
+      Billboard.create(beaconEntity, { billboardMode: BillboardMode.BM_Y })
     }
-    TextShape.getMutable(bootEntity).text = `boot: ${stage}`
+    TextShape.getMutable(beaconEntity).text = text
   } catch (_) {}
 }
