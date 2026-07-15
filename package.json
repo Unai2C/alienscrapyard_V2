@@ -5,9 +5,9 @@
   "scripts": {
     "start": "sdk-commands start",
     "start:mobile": "sdk-commands start --mobile",
-    "deploy": "sdk-commands deploy",
-    "build": "sdk-commands build",
-    "build:prod": "sdk-commands build --production",
+    "deploy": "sdk-commands build --customEntryPoint && sdk-commands deploy --skip-build",
+    "build": "sdk-commands build --customEntryPoint",
+    "build:prod": "sdk-commands build --customEntryPoint --production",
     "upgrade-sdk": "npm install --save-dev @dcl/sdk@latest",
     "upgrade-sdk:next": "npm install --save-dev @dcl/sdk@next",
     "server-logs": "npx -y @dcl/sdk-commands@7.24.4-28592331167.commit-697ce9e sdk-server-logs",

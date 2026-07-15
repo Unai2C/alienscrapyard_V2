@@ -25,7 +25,8 @@ const slotPlacedBy:     Record<string, string> = {}
 const slotPlacedByName: Record<string, string> = {}
 const processedRequestIds: Record<string, true> = {}
 
-export function initServer(): void {
+export function initServer(opts?: { sync?: boolean }): void {
+  const sync = opts?.sync !== false
   roundEntity = engine.addEntity()
   RoundState.create(roundEntity, {
     phase: 'IDLE',
@@ -41,16 +42,19 @@ export function initServer(): void {
   timerEntity = engine.addEntity()
   GameTimer.create(timerEntity, { secondsLeft: BUILD_DURATION_SECONDS })
 
-  // Dynamic import: '@dcl/sdk/network' has module-load side effects that are
-  // fatal on some client runtimes; the shared bundle must never import it
-  // statically. On the server it resolves immediately.
-  import('@dcl/sdk/network')
-    .then(({ syncEntity }) => {
-      syncEntity(roundEntity, [RoundState.componentId], ROUND_ENTITY_ENUM_ID)
-      syncEntity(timerEntity, [GameTimer.componentId], TIMER_ENTITY_ENUM_ID)
-      console.log('[SERVER] state entities synced')
-    })
-    .catch(err => console.log(`[SERVER] network module unavailable: ${err}`))
+  // Dynamic import: '@dcl/sdk/network' has module-load side effects AND
+  // unhandled internal throws ("Couldn't fetch profile data") that are
+  // fatal on some client runtimes. Only touched when sync is requested —
+  // local mode (sync:false) runs the round loop without any networking.
+  if (sync) {
+    import('@dcl/sdk/network')
+      .then(({ syncEntity }) => {
+        syncEntity(roundEntity, [RoundState.componentId], ROUND_ENTITY_ENUM_ID)
+        syncEntity(timerEntity, [GameTimer.componentId], TIMER_ENTITY_ENUM_ID)
+        console.log('[SERVER] state entities synced')
+      })
+      .catch(err => console.log(`[SERVER] network module unavailable: ${err}`))
+  }
 
   console.log('[SERVER] initialized — first round begins shortly')
   setTimeout(() => enterBuild(), 1000)
