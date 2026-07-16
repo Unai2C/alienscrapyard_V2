@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "SDK7 Template scene",
   "scripts": {
-    "start": "sdk-commands start",
-    "start:mobile": "sdk-commands start --mobile",
+    "start": "sdk-commands start --customEntryPoint",
+    "start:mobile": "sdk-commands start --mobile --customEntryPoint",
     "deploy": "sdk-commands build --customEntryPoint && sdk-commands deploy --skip-build",
     "build": "sdk-commands build --customEntryPoint",
     "build:prod": "sdk-commands build --customEntryPoint --production",
